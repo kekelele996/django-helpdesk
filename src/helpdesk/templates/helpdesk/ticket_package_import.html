@@ -1,0 +1,175 @@
+{% extends "helpdesk/base.html" %}
+
+{% load i18n %}
+
+{% block helpdesk_title %}
+  {% translate "Import Ticket Package" %}
+{% endblock helpdesk_title %}
+
+{% block helpdesk_breadcrumb %}
+  <li class="breadcrumb-item">
+    <a href="{% url 'helpdesk:list' %}">{% translate "Tickets" %}</a>
+  </li>
+  <li class="breadcrumb-item active">{% translate "Import Ticket Package" %}</li>
+{% endblock helpdesk_breadcrumb %}
+
+{% block helpdesk_body %}
+  <h2>{% translate "Import Ticket Package" %}</h2>
+  <p class="lead text-body-secondary">
+    {% translate "Upload a ticket package (.zip) exported from another helpdesk. The package is verified and checked for conflicts and missing references before anything is written." %}
+  </p>
+
+  <div class="card mb-4">
+    <div class="card-body">
+      <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        <input type="hidden" name="stage" value="preview" />
+        <div class="mb-3">
+          <label class="form-label" for="id_package">{% translate "Package file" %}</label>
+          <input class="form-control" type="file" id="id_package" name="package" accept=".zip,application/zip" required />
+        </div>
+        <button type="submit" class="btn btn-primary">
+          <i class="fa-solid fa-magnifying-glass me-2"></i>{% translate "Verify and preview" %}
+        </button>
+      </form>
+    </div>
+  </div>
+
+  {% if package %}
+    <div class="card mb-4">
+      <div class="card-header">
+        <i class="fa-solid fa-box me-2"></i>{% translate "Package contents" %}
+      </div>
+      <div class="card-body">
+        <p class="mb-1">
+          <span class="badge bg-success-subtle text-success-emphasis">
+            <i class="fa-solid fa-shield-halved me-1"></i>{% translate "Checksums verified" %}
+          </span>
+        </p>
+        <p class="mb-1">{% translate "Package ID" %}: <code>{{ package.package_id }}</code></p>
+        <p class="mb-1">{% translate "Exported at" %}: {{ package.exported_at }}</p>
+        <p class="mb-0">{% translate "Tickets in package" %}: {{ package.tickets|length }}</p>
+      </div>
+    </div>
+
+    {% if plan.already_imported %}
+      <div class="alert alert-info" role="alert">
+        <i class="fa-solid fa-circle-info me-2"></i>
+        {% translate "This package has already been imported. Confirming again will not create duplicate tickets." %}
+      </div>
+    {% endif %}
+
+    {% if plan.errors %}
+      <div class="alert alert-danger" role="alert">
+        <h6 class="alert-heading"><i class="fa-solid fa-triangle-exclamation me-2"></i>{% translate "Blocking conflicts" %}</h6>
+        <ul class="mb-0">
+          {% for error in plan.errors %}
+            <li>{{ error }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    {% if plan.missing_references %}
+      <div class="alert alert-warning" role="alert">
+        <h6 class="alert-heading"><i class="fa-solid fa-link-slash me-2"></i>{% translate "Missing references" %}</h6>
+        <ul class="mb-2">
+          {% for ref in plan.missing_references %}
+            <li>{{ ref }}</li>
+          {% endfor %}
+        </ul>
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" value="1" name="drop_external_refs" id="id_drop_external_refs"
+                 {% if plan.drop_external_refs %}checked{% endif %} />
+          <label class="form-check-label" for="id_drop_external_refs">
+            {% translate "Drop these links and import the tickets anyway." %}
+          </label>
+        </div>
+      </div>
+    {% endif %}
+
+    {% if plan.warnings %}
+      <div class="alert alert-secondary" role="alert">
+        <h6 class="alert-heading"><i class="fa-solid fa-circle-exclamation me-2"></i>{% translate "Warnings" %}</h6>
+        <ul class="mb-0">
+          {% for warning in plan.warnings %}
+            <li>{{ warning }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    <div class="card mb-4">
+      <div class="card-body px-0">
+        <div class="table-responsive">
+          <table class="table mb-0">
+            <thead class="text-uppercase small fw-medium">
+              <tr>
+                <th>{% translate "Source #" %}</th>
+                <th>{% translate "Title" %}</th>
+                <th>{% translate "Source queue" %}</th>
+                <th>{% translate "Target queue" %}</th>
+                <th>{% translate "Status" %}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for t in plan.tickets %}
+                <tr>
+                  <td>{{ t.source_id }}</td>
+                  <td>{{ t.title }}</td>
+                  <td><code>{{ t.queue_slug }}</code></td>
+                  <td>
+                    {% if t.queue %}
+                      {{ t.queue.title }}
+                    {% else %}
+                      <span class="text-danger">{% translate "missing" %}</span>
+                    {% endif %}
+                  </td>
+                  <td>{{ t.ref }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="stage" value="confirm" />
+      {% if plan.missing_queue_slugs %}
+        <div class="card mb-4 border-warning">
+          <div class="card-header">
+            <i class="fa-solid fa-arrows-left-right me-2"></i>{% translate "Map missing queues" %}
+          </div>
+          <div class="card-body">
+            {% for slug in plan.missing_queue_slugs %}
+              <div class="mb-3 row">
+                <label class="col-sm-3 col-form-label"><code>{{ slug }}</code></label>
+                <div class="col-sm-9">
+                  <input type="hidden" name="missing_queue_slug" value="{{ slug }}" />
+                  <select class="form-select" name="queue_{{ slug }}">
+                    <option value="">{% translate "Do not import (block)" %}</option>
+                    {% for q in queues %}
+                      <option value="{{ q.id }}">{{ q.title }} ({{ q.slug }})</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+      <button type="submit" class="btn btn-primary"
+              {% if plan.errors and not plan.already_imported %}disabled{% endif %}>
+        <i class="fa-solid fa-file-import me-2"></i>
+        {% if plan.already_imported %}
+          {% translate "I understand, continue" %}
+        {% else %}
+          {% translate "Confirm import" %}
+        {% endif %}
+      </button>
+      <a class="btn btn-outline-secondary ms-2" href="{% url 'helpdesk:package_import' %}">{% translate "Cancel" %}</a>
+    </form>
+  {% endif %}
+{% endblock helpdesk_body %}

@@ -846,6 +846,11 @@ def mass_update(request):
     if not (tickets and action):
         return HttpResponseRedirect(reverse("helpdesk:list"))
 
+    if action == "export_package":
+        from helpdesk.views.package import export_tickets_package
+
+        return export_tickets_package(request)
+
     user = kbitem = None
 
     if action.startswith("assign_"):

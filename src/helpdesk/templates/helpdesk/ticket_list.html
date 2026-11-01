@@ -98,64 +98,70 @@
               </thead>
             </table>
             {# Actions dropdown #}
-            <div class="dropdown" id="actions-dropdown">
-              <button class="btn bg-body-tertiary border dropdown-toggle"
-                      type="button"
-                      data-bs-toggle="dropdown"
-                      data-bs-auto-close="outside"
-                      aria-expanded="false">{% translate "Actions" %}</button>
-              <ul class="dropdown-menu">
-                <li>
-                  <h6 class="dropdown-header">{% translate "Select" %}</h6>
-                </li>
-                <li>
-                  <button id="select_all_btn" type="button" class="dropdown-item">
-                    <i class="fa-regular fa-circle-check"></i> {% translate "All" %}
-                  </button>
-                </li>
-                <li>
-                  <button id="select_none_btn" type="button" class="dropdown-item">
-                    <i class="fa-regular fa-circle-xmark"></i> {% translate "None" %}
-                  </button>
-                </li>
-                <li>
-                  <button id="select_inverse_btn" type="button" class="dropdown-item">
-                    <i class="fas fa-expand-arrows-alt"></i> {% translate "Invert" %}
-                  </button>
-                </li>
-                <li>
-                  <h6 class="dropdown-header">{% translate "Action" %}</h6>
-                </li>
-                <li class="px-3">
-                  <select class="form-select" name="action" id="id_mass_action">
-                    <option value='take'>{% translate "Take (Assign to me)" %}</option>
-                    <option value='delete'>{% translate "Delete" %}</option>
-                    <option value='merge'>{% translate "Merge" %}</option>
-                    <optgroup label='{% translate "Close" %}'>
-                      <option value='close'>{% translate "Close (Don't Send E-Mail)" %}</option>
-                      <option value='close_public'>{% translate "Close (Send E-Mail)" %}</option>
-                    </optgroup>
-                    <optgroup label='{% translate "Assign To" %}'>
-                      <option value='unassign'>{% translate "Nobody (Unassign)" %}</option>
-                      {% for u in assignable_users %}
-                        <option value='assign_{{ u.id }}'>{{ u.get_username }}</option>
-                      {% endfor %}
-                    </optgroup>
-                    <optgroup label='{% translate "Set KB Item" %}'>
-                      <option value='kbitem_none'>{% translate "No KB Item" %}</option>
-                      {% for kbi in kb_items %}
-                        <option value='kbitem_{{ kbi.id }}'>{{ kbi.category.title }}: {{ kbi.title }}</option>
-                      {% endfor %}
-                    </optgroup>
-                  </select>
-                </li>
-                <li class="d-grid p-3">
-                  <button type="submit" class="btn bg-body-tertiary border">
-                    {% translate "Go" %}
-                    <i class="fa-solid fa-arrow-right"></i>
-                  </button>
-                </li>
-              </ul>
+            <div class="d-flex gap-2 align-items-start">
+              <div class="dropdown" id="actions-dropdown">
+                <button class="btn bg-body-tertiary border dropdown-toggle"
+                        type="button"
+                        data-bs-toggle="dropdown"
+                        data-bs-auto-close="outside"
+                        aria-expanded="false">{% translate "Actions" %}</button>
+                <ul class="dropdown-menu">
+                  <li>
+                    <h6 class="dropdown-header">{% translate "Select" %}</h6>
+                  </li>
+                  <li>
+                    <button id="select_all_btn" type="button" class="dropdown-item">
+                      <i class="fa-regular fa-circle-check"></i> {% translate "All" %}
+                    </button>
+                  </li>
+                  <li>
+                    <button id="select_none_btn" type="button" class="dropdown-item">
+                      <i class="fa-regular fa-circle-xmark"></i> {% translate "None" %}
+                    </button>
+                  </li>
+                  <li>
+                    <button id="select_inverse_btn" type="button" class="dropdown-item">
+                      <i class="fas fa-expand-arrows-alt"></i> {% translate "Invert" %}
+                    </button>
+                  </li>
+                  <li>
+                    <h6 class="dropdown-header">{% translate "Action" %}</h6>
+                  </li>
+                  <li class="px-3">
+                    <select class="form-select" name="action" id="id_mass_action">
+                      <option value='take'>{% translate "Take (Assign to me)" %}</option>
+                      <option value='delete'>{% translate "Delete" %}</option>
+                      <option value='merge'>{% translate "Merge" %}</option>
+                      <option value='export_package'>{% translate "Export ticket package" %}</option>
+                      <optgroup label='{% translate "Close" %}'>
+                        <option value='close'>{% translate "Close (Don't Send E-Mail)" %}</option>
+                        <option value='close_public'>{% translate "Close (Send E-Mail)" %}</option>
+                      </optgroup>
+                      <optgroup label='{% translate "Assign To" %}'>
+                        <option value='unassign'>{% translate "Nobody (Unassign)" %}</option>
+                        {% for u in assignable_users %}
+                          <option value='assign_{{ u.id }}'>{{ u.get_username }}</option>
+                        {% endfor %}
+                      </optgroup>
+                      <optgroup label='{% translate "Set KB Item" %}'>
+                        <option value='kbitem_none'>{% translate "No KB Item" %}</option>
+                        {% for kbi in kb_items %}
+                          <option value='kbitem_{{ kbi.id }}'>{{ kbi.category.title }}: {{ kbi.title }}</option>
+                        {% endfor %}
+                      </optgroup>
+                    </select>
+                  </li>
+                  <li class="d-grid p-3">
+                    <button type="submit" class="btn bg-body-tertiary border">
+                      {% translate "Go" %}
+                      <i class="fa-solid fa-arrow-right"></i>
+                    </button>
+                  </li>
+                </ul>
+              </div>
+              <a class="btn btn-outline-secondary" href="{% url 'helpdesk:package_import' %}">
+                <i class="fa-solid fa-file-import me-2"></i>{% translate "Import ticket package" %}
+              </a>
             </div>
           </form>
           {% if search_message %}

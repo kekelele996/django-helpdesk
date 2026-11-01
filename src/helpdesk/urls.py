@@ -14,7 +14,7 @@ from rest_framework.routers import DefaultRouter
 
 from helpdesk import settings as helpdesk_settings
 from helpdesk.decorators import helpdesk_staff_member_required, protect_view
-from helpdesk.views import feeds, public, staff
+from helpdesk.views import feeds, package, public, staff
 from helpdesk.views.api import (
     CreateUserView,
     FollowUpAttachmentViewSet,
@@ -70,6 +70,16 @@ if helpdesk_settings.HELPDESK_UI_ENABLED:
         path("dashboard/", staff.dashboard, name="dashboard"),
         path("tickets/", staff.ticket_list, name="list"),
         path("tickets/update/", staff.mass_update, name="mass_update"),
+        path(
+            "tickets/package/export/",
+            package.export_tickets_package,
+            name="package_export",
+        ),
+        path(
+            "tickets/package/import/",
+            package.ticket_package_import,
+            name="package_import",
+        ),
         path("tickets/merge", staff.merge_tickets, name="merge_tickets"),
         path("tickets/<int:ticket_id>/", staff.view_ticket, name="view"),
         path(

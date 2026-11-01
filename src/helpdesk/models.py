@@ -2230,6 +2230,50 @@ class TicketDependency(models.Model):
         return f"{self.ticket} / {self.depends_on}"
 
 
+class TicketPackageImport(models.Model):
+    """
+    Records that a verifiable ticket package (see helpdesk.ticket_package)
+    has been imported and maps the package-local ticket references to the
+    newly created tickets.
+
+    The unique (package_id, local_ref) pair is what makes importing the very
+    same package idempotent: a second import finds these rows and returns the
+    existing tickets instead of creating duplicate copies.
+    """
+
+    package_id = models.UUIDField(
+        _("Package ID"),
+        db_index=True,
+        help_text=_("Stable identifier of the imported ticket package."),
+    )
+
+    local_ref = models.CharField(
+        _("Package-local ticket reference"),
+        max_length=64,
+        help_text=_("Reference used inside the package for the source ticket."),
+    )
+
+    ticket = models.ForeignKey(
+        Ticket,
+        on_delete=models.CASCADE,
+        related_name="package_imports",
+        verbose_name=_("Ticket"),
+    )
+
+    imported_at = models.DateTimeField(
+        _("Imported at"),
+        auto_now_add=True,
+    )
+
+    class Meta:
+        unique_together = (("package_id", "local_ref"),)
+        verbose_name = _("Ticket package import")
+        verbose_name_plural = _("Ticket package imports")
+
+    def __str__(self):
+        return f"{self.package_id}:{self.local_ref} -> {self.ticket_id}"
+
+
 def is_a_list_without_empty_element(task_list):
     if not isinstance(task_list, list):
         raise ValidationError(f"{task_list} is not a list")
