@@ -1,0 +1,111 @@
+{% extends "helpdesk/base.html" %}
+
+{% load i18n %}
+
+{% block helpdesk_title %}
+  {% translate "Migrate Checklist" %}
+{% endblock helpdesk_title %}
+
+{% block helpdesk_breadcrumb %}
+  <li class="breadcrumb-item">
+    <a href="{% url 'helpdesk:list' %}">{% translate "Tickets" %}</a>
+  </li>
+  <li class="breadcrumb-item">
+    <a href="{% url 'helpdesk:list' %}{{ ticket.id }}/">{{ ticket.queue.slug }}-{{ ticket.id }}</a>
+  </li>
+  <li class="breadcrumb-item active">{{ checklist.name }}</li>
+{% endblock helpdesk_breadcrumb %}
+
+{% block helpdesk_body %}
+  <div class="row">
+    <div class="col-12 col-md-8 col-lg-6 mx-auto">
+      <div class="card">
+        <div class="card-header">
+          <h1 class="fs-5 mb-0">
+            {% blocktranslate trimmed with checklist_name=checklist.name from_version=preview.source_version to_version=preview.target_version %}
+              Migrate "{{ checklist_name }}" from version {{ from_version }} to {{ to_version }}
+            {% endblocktranslate %}
+          </h1>
+        </div>
+        <div class="card-body">
+          <p>
+            {% translate "The checklist is pinned to the template version it was created with. The following changes will be applied if you continue. Completion records are never deleted: removed requirements are kept as invalidated history entries." %}
+          </p>
+
+          {% if preview.added %}
+            <h2 class="fs-6 text-success">
+              {% blocktranslate count counter=preview.added|length %}{{ counter }} task will be added{% plural %}{{ counter }} tasks will be added{% endblocktranslate %}
+            </h2>
+            <ul>
+              {% for item in preview.added %}
+                <li>{{ item.description }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+
+          {% if preview.reset %}
+            <h2 class="fs-6 text-warning">
+              {% blocktranslate count counter=preview.reset|length %}{{ counter }} completed task will revert to "To do"{% plural %}{{ counter }} completed tasks will revert to "To do"{% endblocktranslate %}
+            </h2>
+            <ul>
+              {% for item in preview.reset %}
+                <li>
+                  <del>{{ item.old_description }}</del>
+                  &rarr; {{ item.new_description }}
+                </li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+
+          {% if preview.updated %}
+            <h2 class="fs-6 text-body-secondary">
+              {% blocktranslate count counter=preview.updated|length %}{{ counter }} open task will be updated{% plural %}{{ counter }} open tasks will be updated{% endblocktranslate %}
+            </h2>
+            <ul>
+              {% for item in preview.updated %}
+                <li>
+                  <del>{{ item.old_description }}</del>
+                  &rarr; {{ item.new_description }}
+                </li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+
+          {% if preview.invalidated %}
+            <h2 class="fs-6 text-danger">
+              {% blocktranslate count counter=preview.invalidated|length %}{{ counter }} task will be invalidated{% plural %}{{ counter }} tasks will be invalidated{% endblocktranslate %}
+            </h2>
+            <ul>
+              {% for item in preview.invalidated %}
+                <li>
+                  {{ item.task.description }}
+                  {% if item.task.completion_date %}
+                    <span class="badge text-bg-secondary">{% translate "completed record kept" %}</span>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+
+          {% if not preview.added and not preview.invalidated and not preview.reset and not preview.updated %}
+            <p class="text-body-secondary">
+              {% translate "The template versions contain the same requirements. There is nothing to migrate." %}
+            </p>
+          {% endif %}
+
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="source_version" value="{{ preview.source_version }}" />
+            <div class="d-flex mt-4">
+              <a class="btn bg-body-tertiary border me-auto"
+                 href="{{ ticket.get_absolute_url }}">{% translate "Cancel" %}</a>
+              <button type="submit" class="btn btn-primary">
+                {% translate "Confirm migration" %}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock helpdesk_body %}

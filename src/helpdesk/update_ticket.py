@@ -395,7 +395,9 @@ def update_ticket(
         if checklist.id not in new_checklists:
             continue
         new_completed_tasks = new_checklists[checklist.id]
-        for task in checklist.tasks.all():
+        # Invalidated tasks are kept only for history; they are not part of
+        # the submitted form and must never lose their completion date here.
+        for task in checklist.tasks.active():
             changed = None
 
             # Add completion if it was not done yet

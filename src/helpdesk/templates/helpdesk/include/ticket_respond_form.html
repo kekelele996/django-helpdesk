@@ -178,7 +178,7 @@
                 <li class="list-group-item">
                   <h6 class="mb-0">{{ checklist }}</h6>
                 </li>
-                {% for task in checklist.tasks.all %}
+                {% for task in checklist.tasks.active %}
                   <li class="list-group-item"
                       {% if task.completion_date %}
                         title="{% translate "Completed on" %} {{ task.completion_date }}"

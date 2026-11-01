@@ -319,6 +319,19 @@
                           onclick="$(this).siblings('button').children('i').toggleClass('fa-caret-down fa-caret-up')">
                       {{ checklist }}
                     </span>
+                    {% if checklist.template_version %}
+                      <span class="badge text-bg-light border"
+                            title="{% translate 'Pinned template version' %}">
+                        v{{ checklist.template_version }}
+                      </span>
+                    {% endif %}
+                    {% if not checklist.is_up_to_date %}
+                      <a class="badge text-bg-warning"
+                         href="{% url 'helpdesk:migrate_ticket_checklist' ticket.id checklist.id %}"
+                         title="{% blocktranslate with current=checklist.template.current_version %}A new template version (v{{ current }}) is available. Review and migrate this checklist.{% endblocktranslate %}">
+                        {% translate "New version available" %}
+                      </a>
+                    {% endif %}
                   </p>
                   <div class="btn-group btn-group-sm" role="group" aria-label="Checklist actions">
                     <button class="btn bg-body-tertiary border"
@@ -336,7 +349,7 @@
                 </div>
                 <div class="collapse mt-3" id="checklist{{ checklist.id }}">
                   <ul class="list-unstyled pe-none">
-                    {% for task in checklist.tasks.all %}
+                    {% for task in checklist.tasks.active %}
                       <li class="mb-1"
                           {% if task.completion_date %}
                             title="{% translate "Completed on" %} {{ task.completion_date }}"
@@ -351,12 +364,31 @@
                         </div>
                       </li>
                     {% endfor %}
+                    {% for task in checklist.tasks.invalidated %}
+                      <li class="mb-1 text-body-secondary"
+                          {% if task.completion_date %}
+                            title="{% translate "Completed on" %} {{ task.completion_date }}"
+                          {% endif %}>
+                        <div class="form-check">
+                          <input class="form-check-input"
+                                 type="checkbox"
+                                 id="task-view-{{ task.id }}"
+                                 disabled
+                                 {% if task.completion_date %}
+                                   checked{% endif %} />
+                          <label class="form-check-label" for="task-view-{{ task.id }}">
+                            <del>{{ task }}</del>
+                            <span class="badge text-bg-secondary">{% translate "invalidated" %}</span>
+                          </label>
+                        </div>
+                      </li>
+                    {% endfor %}
                   </ul>
                 </div>
                 {% if checklist.tasks.completed.count %}
                   <div class="px-0">
                     <div class="progress" style="height: 3px;">
-                      {% widthratio checklist.tasks.completed.count checklist.tasks.count 100 as width %}
+                      {% widthratio checklist.tasks.completed.count checklist.tasks.active.count 100 as width %}
                       <div class="progress-bar progress-bar-striped progress-bar-animated"
                            role="progressbar"
                            style="width: {{ width }}%"

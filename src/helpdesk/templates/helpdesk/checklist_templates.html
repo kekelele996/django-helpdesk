@@ -23,7 +23,8 @@
           <div class="list-group-item d-flex justify-content-between align-items-center{% if checklist_template.id == checklist.id %}
                         active{% endif %}">
             <span class="fs-6 me-2">{{ checklist.name }}</span>
-            <span class="badge bg-primary-subtle text-primary-emphasis border-primary-subtle">{{ checklist.task_list|length }} {% translate "tasks" %}</span>
+            <span class="badge text-bg-light border" title="{% translate 'Current template version' %}">v{{ checklist.current_version }}</span>
+            <span class="badge bg-primary-subtle text-primary-emphasis border-primary-subtle ms-1">{{ checklist.task_list|length }} {% translate "tasks" %}</span>
             <div class="dropdown ms-auto">
               <a class="btn bg-body-tertiary border btn-sm"
                  href="#"

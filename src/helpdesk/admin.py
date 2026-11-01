@@ -8,6 +8,7 @@ from helpdesk.models import (
     Checklist,
     ChecklistTask,
     ChecklistTemplate,
+    ChecklistTemplateVersion,
     CustomField,
     EmailTemplate,
     EscalationExclusion,
@@ -138,10 +139,19 @@ class IgnoreEmailAdmin(admin.ModelAdmin):
     list_display = ("name", "queue_list", "email_address", "keep_in_mailbox")
 
 
+class ChecklistTemplateVersionInline(admin.TabularInline):
+    model = ChecklistTemplateVersion
+    extra = 0
+    can_delete = False
+    readonly_fields = ("version", "task_list", "created")
+    ordering = ("-version",)
+
+
 @admin.register(ChecklistTemplate)
 class ChecklistTemplateAdmin(admin.ModelAdmin):
-    list_display = ("name", "task_list")
+    list_display = ("name", "current_version", "task_list")
     search_fields = ("name", "task_list")
+    inlines = (ChecklistTemplateVersionInline,)
 
 
 class ChecklistTaskInline(admin.TabularInline):
@@ -150,7 +160,7 @@ class ChecklistTaskInline(admin.TabularInline):
 
 @admin.register(Checklist)
 class ChecklistAdmin(admin.ModelAdmin):
-    list_display = ("name", "ticket")
+    list_display = ("name", "ticket", "template", "template_version")
     search_fields = ("name", "ticket__id", "ticket__title")
     autocomplete_fields = ("ticket",)
     list_select_related = ("ticket",)

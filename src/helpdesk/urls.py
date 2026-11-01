@@ -128,6 +128,11 @@ if helpdesk_settings.HELPDESK_UI_ENABLED:
             staff.delete_ticket_checklist,
             name="delete_ticket_checklist",
         ),
+        path(
+            "tickets/<int:ticket_id>/checklists/<int:checklist_id>/migrate/",
+            staff.migrate_ticket_checklist,
+            name="migrate_ticket_checklist",
+        ),
         re_path(r"^raw/(?P<type_>\w+)/$", staff.raw_details, name="raw"),
         path("rss/", staff.rss_list, name="rss_index"),
         path("reports/", staff.report_index, name="report_index"),

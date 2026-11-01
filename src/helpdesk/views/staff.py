@@ -23,6 +23,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied
 from django.core.handlers.wsgi import WSGIRequest
 from django.core.paginator import EmptyPage, PageNotAnInteger, Paginator
+from django.db import transaction
 from django.db.models import Case, F, Q, When
 from django.forms import HiddenInput, TextInput, inlineformset_factory
 from django.http import (
@@ -76,6 +77,7 @@ from helpdesk.lib import (
 )
 from helpdesk.models import (
     Checklist,
+    ChecklistMigrationConflict,
     ChecklistTask,
     ChecklistTemplate,
     CustomField,
@@ -577,9 +579,15 @@ def view_ticket(request, ticket_id):
     if checklist_form.is_valid():
         checklist = checklist_form.save(commit=False)
         checklist.ticket = ticket
-        checklist.save()
 
         checklist_template = checklist_form.cleaned_data.get("checklist_template")
+        # Pin the template version so later template edits never alter the
+        # requirements recorded on this ticket.
+        if checklist_template:
+            checklist.pin_template(checklist_template)
+
+        checklist.save()
+
         # Add predefined tasks if template has been selected
         if checklist_template:
             checklist.create_tasks_from_template(checklist_template)
@@ -652,7 +660,11 @@ def edit_ticket_checklist(request, ticket_id, checklist_id):
         can_delete=True,
         extra=0,
     )
-    formset = TaskFormSet(request.POST or None, instance=checklist)
+    formset = TaskFormSet(
+        request.POST or None,
+        instance=checklist,
+        queryset=checklist.tasks.active(),
+    )
     if form.is_valid() and formset.is_valid():
         form.save()
         formset.save()
@@ -686,6 +698,74 @@ def delete_ticket_checklist(request, ticket_id, checklist_id):
         {
             "ticket": ticket,
             "checklist": checklist,
+        },
+    )
+
+
+@helpdesk_staff_member_required
+def migrate_ticket_checklist(request, ticket_id, checklist_id):
+    ticket = get_object_or_404(Ticket, id=ticket_id)
+    ticket_perm_check(request, ticket)
+    checklist = get_object_or_404(ticket.checklists.all(), id=checklist_id)
+
+    # Only checklists created from a (still existing) template can migrate.
+    if not checklist.is_template_linked:
+        raise Http404
+
+    target_version = checklist.template.current_version
+
+    if request.method == "POST":
+        try:
+            source_version = int(request.POST.get("source_version", ""))
+        except (TypeError, ValueError):
+            source_version = None
+
+        # Row lock + single transaction: any failure (including a crashed
+        # request) rolls every task and the pinned version back to their
+        # original state.
+        try:
+            with transaction.atomic():
+                locked_checklist = Checklist.objects.select_for_update().get(
+                    pk=checklist.pk
+                )
+                applied = locked_checklist.migrate_to_version(
+                    user=request.user,
+                    target_version=target_version,
+                    source_version=source_version,
+                )
+        except ChecklistMigrationConflict as exc:
+            messages.error(request, " ".join(exc.messages))
+            return redirect(
+                "helpdesk:migrate_ticket_checklist", ticket.id, checklist.id
+            )
+
+        if applied:
+            messages.success(
+                request,
+                _('Checklist "%(name)s" updated to template version %(version)s')
+                % {"name": checklist.name, "version": target_version},
+            )
+        else:
+            # The checklist was already at the target version. Do not touch
+            # any completion record and do not write another audit entry.
+            messages.info(
+                request,
+                _(
+                    'Checklist "%(name)s" is already at template version '
+                    "%(version)s; no changes were made."
+                )
+                % {"name": checklist.name, "version": target_version},
+            )
+        return redirect(ticket)
+
+    preview = checklist.migration_preview(target_version)
+    return render(
+        request,
+        "helpdesk/checklist_migrate.html",
+        {
+            "ticket": ticket,
+            "checklist": checklist,
+            "preview": preview,
         },
     )
 

@@ -2245,6 +2245,9 @@ class ChecklistTemplate(models.Model):
     task_list = models.JSONField(
         verbose_name=_("Task List"), validators=[is_a_list_without_empty_element]
     )
+    current_version = models.PositiveIntegerField(
+        verbose_name=_("Current Version"), default=1
+    )
 
     class Meta:
         verbose_name = _("Checklist Template")
@@ -2252,6 +2255,73 @@ class ChecklistTemplate(models.Model):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        # Editing the task list creates a new, immutable version snapshot.
+        # Existing checklists stay pinned to the version they were created
+        # from, so changing a template only affects newly created checklists.
+        create_snapshot = kwargs.pop("create_version_snapshot", True)
+        adding = self._state.adding
+        previous_task_list = None
+        if not adding:
+            previous_task_list = (
+                type(self)
+                .objects.filter(pk=self.pk)
+                .values_list("task_list", flat=True)
+                .first()
+            )
+
+        if (
+            create_snapshot
+            and not adding
+            and previous_task_list is not None
+            and previous_task_list != self.task_list
+        ):
+            self.current_version = (self.current_version or 1) + 1
+
+        super().save(*args, **kwargs)
+
+        if create_snapshot:
+            self.versions.get_or_create(
+                version=self.current_version,
+                defaults={"task_list": self.task_list},
+            )
+
+    def task_list_for_version(self, version):
+        return self.versions.get(version=version).task_list
+
+
+class ChecklistTemplateVersion(models.Model):
+    """
+    Immutable snapshot of a checklist template's task list. Tickets pin the
+    version their checklist was created from, which preserves the exact
+    requirements that were in force at creation time.
+    """
+
+    template = models.ForeignKey(
+        ChecklistTemplate,
+        on_delete=models.CASCADE,
+        verbose_name=_("Checklist Template"),
+        related_name="versions",
+    )
+    version = models.PositiveIntegerField(verbose_name=_("Version"))
+    task_list = models.JSONField(
+        verbose_name=_("Task List"), validators=[is_a_list_without_empty_element]
+    )
+    created = models.DateTimeField(verbose_name=_("Created"), default=timezone.now)
+
+    class Meta:
+        verbose_name = _("Checklist Template Version")
+        verbose_name_plural = _("Checklist Template Versions")
+        unique_together = (("template", "version"),)
+        ordering = ("version",)
+
+    def __str__(self):
+        return f"{self.template.name} v{self.version}"
+
+
+class ChecklistMigrationConflict(ValidationError):
+    """Raised when a migration is confirmed against a stale source version."""
 
 
 class Checklist(models.Model):
@@ -2262,6 +2332,17 @@ class Checklist(models.Model):
         related_name="checklists",
     )
     name = models.CharField(verbose_name=_("Name"), max_length=100)
+    template = models.ForeignKey(
+        ChecklistTemplate,
+        on_delete=models.SET_NULL,
+        verbose_name=_("Checklist Template"),
+        related_name="checklists",
+        null=True,
+        blank=True,
+    )
+    template_version = models.PositiveIntegerField(
+        verbose_name=_("Checklist Template Version"), null=True, blank=True
+    )
 
     class Meta:
         verbose_name = _("Checklist")
@@ -2270,17 +2351,189 @@ class Checklist(models.Model):
     def __str__(self):
         return self.name
 
+    @property
+    def is_template_linked(self):
+        return self.template_id is not None and self.template_version is not None
+
+    @property
+    def is_up_to_date(self):
+        if not self.is_template_linked:
+            return True
+        return self.template_version >= self.template.current_version
+
+    def pin_template(self, template):
+        """Freeze the template version this checklist is created from."""
+        self.template = template
+        self.template_version = template.current_version
+
     def create_tasks_from_template(self, template):
-        for position, task in enumerate(template.task_list):
+        if self.template_version:
+            task_list = template.task_list_for_version(self.template_version)
+        else:
+            task_list = template.task_list
+        for position, task in enumerate(task_list):
             self.tasks.create(description=task, position=position)
+
+    def migration_preview(self, target_version=None):
+        """
+        Compare the pinned template version with ``target_version`` and
+        classify every difference against the checklist's current (active)
+        tasks, aligned by position:
+
+        - ``added``: tasks the new template introduces (created as to-do);
+        - ``invalidated``: tasks the new template no longer contains (kept as
+          historical records, including their completion date);
+        - ``reset``: completed tasks whose requirement text changed, so they
+          revert to to-do;
+        - ``updated``: to-do tasks whose requirement text changed.
+        """
+        if not self.is_template_linked:
+            raise ChecklistMigrationConflict(
+                _("This checklist is not linked to a template.")
+            )
+        if target_version is None:
+            target_version = self.template.current_version
+
+        old_task_list = list(
+            self.template.task_list_for_version(self.template_version)
+        )
+        new_task_list = list(self.template.task_list_for_version(target_version))
+        current_tasks = list(self.tasks.active().order_by("position", "id"))
+
+        added, invalidated, reset, updated = [], [], [], []
+        index_max = max(len(current_tasks), len(new_task_list), len(old_task_list))
+        for index in range(index_max):
+            task = current_tasks[index] if index < len(current_tasks) else None
+            new_description = (
+                new_task_list[index] if index < len(new_task_list) else None
+            )
+
+            if task is None:
+                if new_description is not None and index >= len(old_task_list):
+                    added.append(
+                        {"position": index, "description": new_description}
+                    )
+            elif new_description is None:
+                invalidated.append({"task": task, "position": index})
+            elif task.description != new_description:
+                change = {
+                    "task": task,
+                    "position": index,
+                    "old_description": task.description,
+                    "new_description": new_description,
+                }
+                if task.completion_date:
+                    reset.append(change)
+                else:
+                    updated.append(change)
+
+        return {
+            "source_version": self.template_version,
+            "target_version": target_version,
+            "added": added,
+            "invalidated": invalidated,
+            "reset": reset,
+            "updated": updated,
+        }
+
+    def migrate_to_version(
+        self, user=None, target_version=None, source_version=None
+    ):
+        """
+        Apply a template migration. Returns ``False`` (without writing
+        anything) when the checklist is already at the target version, which
+        makes confirming the same migration repeatedly idempotent.
+
+        The caller is expected to hold a row lock and run this inside a
+        transaction; any failure leaves the checklist pinned to its original
+        version.
+        """
+        if not self.is_template_linked:
+            raise ChecklistMigrationConflict(
+                _("This checklist is not linked to a template.")
+            )
+        if target_version is None:
+            target_version = self.template.current_version
+        if source_version is not None and source_version != self.template_version:
+            raise ChecklistMigrationConflict(
+                _(
+                    "The checklist changed since this migration preview was "
+                    "loaded. Please review the changes again."
+                )
+            )
+        if target_version == self.template_version:
+            return False
+
+        preview = self.migration_preview(target_version)
+
+        next_position = (
+            self.tasks.aggregate(largest_position=models.Max("position"))[
+                "largest_position"
+            ]
+            or -1
+        ) + 1
+        reset_tasks = []
+        for item in preview["added"]:
+            self.tasks.create(
+                description=item["description"], position=next_position
+            )
+            next_position += 1
+        for item in preview["invalidated"]:
+            task = item["task"]
+            task.invalidated_at = timezone.now()
+            task.save(update_fields=["invalidated_at"])
+        for item in preview["updated"]:
+            task = item["task"]
+            task.description = item["new_description"]
+            task.save(update_fields=["description"])
+        for item in preview["reset"]:
+            task = item["task"]
+            old_description = task.description
+            task.description = item["new_description"]
+            task.completion_date = None
+            task.save(update_fields=["description", "completion_date"])
+            reset_tasks.append(old_description)
+
+        self.template_version = target_version
+        self.save(update_fields=["template_version"])
+
+        followup = FollowUp(
+            ticket=self.ticket,
+            user=user,
+            public=False,
+            date=timezone.now(),
+            title=_(
+                "Checklist \"%(name)s\" migrated from template version "
+                "%(old_version)s to %(new_version)s"
+            )
+            % {
+                "name": self.name,
+                "old_version": preview["source_version"],
+                "new_version": target_version,
+            },
+        )
+        followup.save()
+        for old_description in reset_tasks:
+            followup.ticketchange_set.create(
+                field=f"[{self.name}] {old_description}",
+                old_value=_("Completed"),
+                new_value=_("To do"),
+            )
+        return True
 
 
 class ChecklistTaskQuerySet(models.QuerySet):
+    def active(self):
+        return self.filter(invalidated_at__isnull=True)
+
+    def invalidated(self):
+        return self.filter(invalidated_at__isnull=False)
+
     def todo(self):
-        return self.filter(completion_date__isnull=True)
+        return self.active().filter(completion_date__isnull=True)
 
     def completed(self):
-        return self.filter(completion_date__isnull=False)
+        return self.active().filter(completion_date__isnull=False)
 
 
 class ChecklistTask(models.Model):
@@ -2297,6 +2550,15 @@ class ChecklistTask(models.Model):
     position = models.PositiveSmallIntegerField(
         verbose_name=_("Position"), db_index=True
     )
+    invalidated_at = models.DateTimeField(
+        verbose_name=_("Invalidated At"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "When set, the task no longer belongs to the checklist's "
+            "template version but is kept for historical reference."
+        ),
+    )
 
     objects = ChecklistTaskQuerySet.as_manager()
 
@@ -2307,3 +2569,7 @@ class ChecklistTask(models.Model):
 
     def __str__(self):
         return self.description
+
+    @property
+    def is_active(self):
+        return self.invalidated_at is None
