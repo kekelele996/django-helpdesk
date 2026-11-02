@@ -37,6 +37,7 @@ from helpdesk.models import (
     FollowUp,
     FollowUpAttachment,
     Queue,
+    QueueMember,
     Ticket,
     TicketCC,
     TicketDependency,
@@ -152,6 +153,11 @@ class ForeignQueueSweepTestCase(TestCase):
         self.foreign_dependency = TicketDependency.objects.create(
             ticket=self.foreign, depends_on=self.my_ticket
         )
+        # Membership in the foreign queue, for the queue-members management
+        # routes addressed by member_id / queue_id rather than ticket_id.
+        self.foreign_member = QueueMember.objects.create(
+            queue=self.theirs, user=self.victim
+        )
         self.client.login(username="restricted", password="pass")
 
     def foreign_kwargs(self, names):
@@ -223,6 +229,8 @@ class ForeignQueueSweepTestCase(TestCase):
         known = {
             "user_name": self.victim.username,
             "queue_slug": self.theirs.slug,
+            "queue_id": self.theirs.id,
+            "member_id": self.foreign_member.id,
             "report": "queuestatus",
             "query": query_to_base64(
                 {"filtering": {}, "sorting": "created", "search_string": ""}

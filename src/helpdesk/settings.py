@@ -130,6 +130,16 @@ HELPDESK_AUTO_SUBSCRIBE_ON_TICKET_RESPONSE = getattr(
     settings, "HELPDESK_AUTO_SUBSCRIBE_ON_TICKET_RESPONSE", False
 )
 
+# Automatically route new, unassigned tickets to available queue members,
+# based on their open ticket load and recent assignment count.
+HELPDESK_AUTO_ASSIGN = getattr(settings, "HELPDESK_AUTO_ASSIGN", False)
+
+# Length of the "recent assignment" window used when balancing the load,
+# in minutes.
+HELPDESK_AUTO_ASSIGN_RECENT_WINDOW_MINUTES = getattr(
+    settings, "HELPDESK_AUTO_ASSIGN_RECENT_WINDOW_MINUTES", 60
+)
+
 # URL schemes that are allowed within links
 ALLOWED_URL_SCHEMES = getattr(
     settings,

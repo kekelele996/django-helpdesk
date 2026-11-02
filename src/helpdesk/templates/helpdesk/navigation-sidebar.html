@@ -46,6 +46,12 @@
         <span>{% translate "Manage Saved Queries" %}</span>
       </a>
     </li>
+    <li class="nav-item{% if "queue-members" in request.path %} active{% endif %}">
+      <a class="nav-link" href="{% url 'helpdesk:queue_members' %}">
+        <i class="fas fa-fw fa-users-gear"></i>
+        <span>{% translate "Queue members" %}</span>
+      </a>
+    </li>
     <li class="nav-item{% if "submit" in request.path %} active{% endif %}">
       <a class="nav-link" href="{% url 'helpdesk:submit' %}">
         <i class="fa-solid fa-fw fa-plus"></i>

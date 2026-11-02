@@ -5,6 +5,7 @@ from django.utils.translation import gettext_lazy as _
 
 from helpdesk import settings as helpdesk_settings
 from helpdesk.models import (
+    AssignmentRecord,
     Checklist,
     ChecklistTask,
     ChecklistTemplate,
@@ -17,6 +18,8 @@ from helpdesk.models import (
     KBIAttachment,
     PreSetReply,
     Queue,
+    QueueMember,
+    QueueServiceArea,
     Ticket,
     TicketChange,
 )
@@ -159,3 +162,33 @@ class ChecklistAdmin(admin.ModelAdmin):
 
 admin.site.register(PreSetReply)
 admin.site.register(EscalationExclusion)
+
+
+@admin.register(QueueServiceArea)
+class QueueServiceAreaAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "queue")
+    list_filter = ("queue",)
+    search_fields = ("name", "slug")
+
+
+@admin.register(QueueMember)
+class QueueMemberAdmin(admin.ModelAdmin):
+    list_display = ("user", "queue", "active", "leave_until")
+    list_filter = ("queue", "active")
+    search_fields = ("user__username", "user__email")
+    filter_horizontal: ClassVar[list] = ["service_areas"]
+
+
+@admin.register(AssignmentRecord)
+class AssignmentRecordAdmin(admin.ModelAdmin):
+    list_display = ("ticket", "user", "kind", "assigned_at", "previous_user")
+    list_filter = ("kind", "queue", "assigned_at")
+    search_fields = ("ticket__id", "user__username")
+    readonly_fields = (
+        "ticket",
+        "queue",
+        "user",
+        "previous_user",
+        "kind",
+        "assigned_at",
+    )

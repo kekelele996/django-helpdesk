@@ -1,0 +1,52 @@
+{% extends "helpdesk/base.html" %}
+
+{% load i18n %}
+
+{% block helpdesk_title %}
+  {% if member %}
+    {% translate "Edit queue member" %}
+  {% else %}
+    {% translate "Add queue member" %}
+  {% endif %}
+{% endblock helpdesk_title %}
+
+{% block helpdesk_breadcrumb %}
+  <li class="breadcrumb-item">
+    <a href="{% url 'helpdesk:queue_members' %}">{% translate "Queue members" %}</a>
+  </li>
+  <li class="breadcrumb-item active">{{ queue.title }}</li>
+{% endblock helpdesk_breadcrumb %}
+
+{% block helpdesk_body %}
+  <h2>
+    {% if member %}
+      {% blocktranslate with username=member.user.get_username queue=queue.title %}
+        Edit {{ username }} in {{ queue }}
+      {% endblocktranslate %}
+    {% else %}
+      {% blocktranslate with queue=queue.title %}Add member to {{ queue }}{% endblocktranslate %}
+    {% endif %}
+  </h2>
+
+  <div class="card">
+    <div class="card-body">
+      <form method="post">
+        {% csrf_token %}
+        {% include "helpdesk/include/form.html" with form=form %}
+        <div class="mt-3">
+          <button type="submit" class="btn btn-primary">
+            {% if member %}
+              {% translate "Save and preview affected tickets" %}
+            {% else %}
+              {% translate "Add member" %}
+            {% endif %}
+          </button>
+          <a href="{% url 'helpdesk:queue_members' %}"
+             class="btn btn-outline-secondary">
+            {% translate "Cancel" %}
+          </a>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock helpdesk_body %}

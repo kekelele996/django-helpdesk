@@ -136,6 +136,22 @@ if helpdesk_settings.HELPDESK_UI_ENABLED:
         path("save_query/", staff.save_query, name="savequery"),
         path("delete_query/<int:pk>/", staff.delete_saved_query, name="delete_query"),
         path("settings/", staff.EditUserSettingsView.as_view(), name="user_settings"),
+        path("queue-members/", staff.queue_members, name="queue_members"),
+        path(
+            "queue-members/queue/<int:queue_id>/add/",
+            staff.queue_member_add,
+            name="queue_member_add",
+        ),
+        path(
+            "queue-members/<int:member_id>/edit/",
+            staff.queue_member_edit,
+            name="queue_member_edit",
+        ),
+        path(
+            "queue-members/<int:member_id>/reassign/",
+            staff.queue_member_reassign,
+            name="queue_member_reassign",
+        ),
         path("ignore/", staff.email_ignore, name="email_ignore"),
         path("ignore/add/", staff.email_ignore_add, name="email_ignore_add"),
         path(

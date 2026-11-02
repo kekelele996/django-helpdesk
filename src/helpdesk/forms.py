@@ -32,6 +32,8 @@ from helpdesk.models import (
     FollowUp,
     IgnoreEmail,
     Queue,
+    QueueMember,
+    QueueServiceArea,
     Ticket,
     TicketCC,
     TicketCustomFieldValue,
@@ -527,6 +529,13 @@ class TicketForm(AbstractTicketForm):
                 helpdesk_settings.HELPDESK_STAFF_ONLY_TICKET_OWNERS
             )
         ]
+        self.fields["service_area"] = forms.ModelChoiceField(
+            queryset=QueueServiceArea.objects.select_related("queue"),
+            required=False,
+            label=_("Service area"),
+            empty_label="--------",
+            widget=forms.Select(attrs={"class": "form-control"}),
+        )
         self._add_form_custom_fields()
 
     def save(self, user):
@@ -541,6 +550,7 @@ class TicketForm(AbstractTicketForm):
                 ticket.assigned_to = u
             except User.DoesNotExist:
                 ticket.assigned_to = None
+        ticket.service_area = self.cleaned_data.get("service_area")
         ticket.save()
 
         self._create_custom_fields(ticket)
@@ -665,6 +675,55 @@ class PublicTicketForm(AbstractTicketForm):
         new_ticket_done.send(sender="PublicTicketForm", ticket=ticket)
 
         return ticket
+
+
+class QueueServiceAreaForm(forms.ModelForm):
+    class Meta:
+        model = QueueServiceArea
+        fields = ("name", "slug")
+        widgets: ClassVar[dict] = {
+            "name": forms.TextInput(attrs={"class": "form-control"}),
+            "slug": forms.TextInput(attrs={"class": "form-control"}),
+        }
+
+
+class QueueMemberForm(forms.ModelForm):
+    """Availability (active / leave / weekly working hours) and service
+    scope of a queue member."""
+
+    class Meta:
+        model = QueueMember
+        fields = ("user", "active", "leave_until", "work_schedule", "service_areas")
+        widgets: ClassVar[dict] = {
+            "user": forms.Select(attrs={"class": "form-control"}),
+            "leave_until": forms.DateTimeInput(
+                attrs={"class": "form-control", "autocomplete": "off"}
+            ),
+            "work_schedule": forms.Textarea(attrs={"class": "form-control", "rows": 4}),
+            "service_areas": forms.CheckboxSelectMultiple(
+                attrs={"class": "form-check-input"}
+            ),
+        }
+
+    def __init__(self, *args, queue=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.queue = queue or getattr(self.instance, "queue", None)
+        self.fields["user"].queryset = get_assignable_users(
+            helpdesk_settings.HELPDESK_STAFF_ONLY_TICKET_OWNERS
+        )
+        if self.queue is not None:
+            self.fields["service_areas"].queryset = self.queue.service_areas.all()
+        # Users are picked once, when the membership is created.
+        if self.instance.pk:
+            self.fields["user"].disabled = True
+
+    def clean_work_schedule(self):
+        return self.cleaned_data.get("work_schedule") or {}
+
+    def save(self, commit=True):
+        if self.queue is not None and not self.instance.pk:
+            self.instance.queue = self.queue
+        return super().save(commit=commit)
 
 
 class UserSettingsForm(forms.ModelForm):

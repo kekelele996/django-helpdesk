@@ -44,6 +44,13 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 
 from helpdesk import settings as helpdesk_settings
+from helpdesk.assignment import (
+    AlreadyAssigned,
+    BatchReassignmentError,
+    apply_reassignment,
+    plan_member_reassignment,
+    take_ticket,
+)
 from helpdesk.copy_followup import copy_followup
 from helpdesk.decorators import (
     helpdesk_staff_member_required,
@@ -61,6 +68,7 @@ from helpdesk.forms import (
     EmailIgnoreForm,
     FormControlDeleteFormSet,
     MultipleTicketSelectForm,
+    QueueMemberForm,
     TicketCCEmailForm,
     TicketCCForm,
     TicketCCUserForm,
@@ -84,6 +92,7 @@ from helpdesk.models import (
     IgnoreEmail,
     PreSetReply,
     Queue,
+    QueueMember,
     SavedSearch,
     Ticket,
     TicketCC,
@@ -524,7 +533,15 @@ def view_ticket(request, ticket_id):
         return HttpResponseRedirect(reverse("helpdesk:list"))
 
     if "take" in request.GET:
-        update_ticket(request.user, ticket, owner=request.user.id)
+        # Claim through the concurrency-safe service so two people taking the
+        # same unassigned ticket at the same time cannot both succeed.
+        try:
+            _taken_ticket, claimed = take_ticket(ticket, request.user)
+        except AlreadyAssigned:
+            messages.error(request, _("Sorry, somebody else took that ticket first."))
+        else:
+            if not claimed:
+                messages.info(request, _("This ticket is already assigned to you."))
         return return_to_ticket(request.user, ticket)
 
     if "subscribe" in request.GET:
@@ -2457,3 +2474,123 @@ def kanban_update_ticket(request, ticket_id):
     ticket.status = new_status
     ticket.save(update_fields=["status", "modified"])
     return JsonResponse({"status": "ok", "new_status": new_status})
+
+
+# ---------------------------------------------------------------------------
+# Queue membership: availability, service scope and batch reassignment
+# ---------------------------------------------------------------------------
+
+
+def _queue_members_for_view(queues):
+    """Annotate each queue with prefetched members/areas for the list page."""
+    result = []
+    for queue in queues:
+        queue.view_members = list(
+            queue.members.select_related("user").prefetch_related("service_areas")
+        )
+        queue.view_areas = list(queue.service_areas.all())
+        result.append(queue)
+    return result
+
+
+@helpdesk_staff_member_required
+def queue_members(request):
+    """List queue members with availability and service scope."""
+    huser = HelpdeskUser(request.user)
+    queues = [
+        q for q in Queue.objects.all().order_by("title") if huser.can_access_queue(q)
+    ]
+    queues = _queue_members_for_view(queues)
+    return render(
+        request,
+        "helpdesk/queue_members.html",
+        {"queues": queues},
+    )
+
+
+@helpdesk_staff_member_required
+def queue_member_add(request, queue_id):
+    queue = get_object_or_404(Queue, pk=queue_id)
+    if not HelpdeskUser(request.user).can_access_queue(queue):
+        raise PermissionDenied
+    if request.method == "POST":
+        form = QueueMemberForm(request.POST, queue=queue)
+        if form.is_valid():
+            member = form.save()
+            messages.success(
+                request,
+                _("Member %(username)s added to queue %(queue)s.")
+                % {"username": member.user.get_username(), "queue": queue.title},
+            )
+            return redirect("helpdesk:queue_members")
+    else:
+        form = QueueMemberForm(queue=queue)
+    return render(
+        request,
+        "helpdesk/queue_member_form.html",
+        {"form": form, "queue": queue, "member": None},
+    )
+
+
+@helpdesk_staff_member_required
+def queue_member_edit(request, member_id):
+    member = get_object_or_404(
+        QueueMember.objects.select_related("queue", "user").prefetch_related(
+            "service_areas"
+        ),
+        pk=member_id,
+    )
+    if not HelpdeskUser(request.user).can_access_queue(member.queue):
+        raise PermissionDenied
+    if request.method == "POST":
+        form = QueueMemberForm(request.POST, instance=member, queue=member.queue)
+        if form.is_valid():
+            form.save()
+            messages.success(request, _("Member availability saved."))
+            # Changing leave/scope affects waiting tickets: ask for
+            # confirmation before moving them.
+            return redirect("helpdesk:queue_member_reassign", member.id)
+    else:
+        form = QueueMemberForm(instance=member, queue=member.queue)
+    return render(
+        request,
+        "helpdesk/queue_member_form.html",
+        {"form": form, "queue": member.queue, "member": member},
+    )
+
+
+@helpdesk_staff_member_required
+def queue_member_reassign(request, member_id):
+    """GET: preview affected waiting tickets. POST: apply the batch."""
+    member = get_object_or_404(
+        QueueMember.objects.select_related("queue", "user").prefetch_related(
+            "service_areas"
+        ),
+        pk=member_id,
+    )
+    if not HelpdeskUser(request.user).can_access_queue(member.queue):
+        raise PermissionDenied
+
+    if request.method == "POST":
+        # Rebuild the plan from current data, then apply atomically.
+        preview = plan_member_reassignment(member)
+        try:
+            count = apply_reassignment(preview)
+        except BatchReassignmentError as exc:
+            messages.error(
+                request,
+                _("No ticket was changed: %s") % exc,
+            )
+        else:
+            messages.success(
+                request,
+                _("%(count)d waiting ticket(s) reassigned.") % {"count": count},
+            )
+        return redirect("helpdesk:queue_members")
+
+    preview = plan_member_reassignment(member)
+    return render(
+        request,
+        "helpdesk/queue_member_reassign.html",
+        {"member": member, "preview": preview},
+    )

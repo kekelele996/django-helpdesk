@@ -484,6 +484,183 @@ class Queue(models.Model):
                 pass
 
 
+def _parse_hhmm(value):
+    """Parse a "HH:MM" string into minutes since midnight."""
+    hours, minutes = str(value).split(":", 1)
+    hours, minutes = int(hours), int(minutes)
+    if not 0 <= hours <= 23 or not 0 <= minutes <= 59:
+        raise ValueError("time must be within a day")
+    return hours * 60 + minutes
+
+
+class QueueServiceArea(models.Model):
+    """
+    A service area (scope of work) offered by a queue. Queue members declare
+    which areas they serve and tickets may be classified into one, allowing
+    new tickets to be routed to a member able to handle them.
+    """
+
+    queue = models.ForeignKey(
+        Queue,
+        on_delete=models.CASCADE,
+        related_name="service_areas",
+        verbose_name=_("Queue"),
+    )
+    name = models.CharField(_("Name"), max_length=100)
+    slug = models.SlugField(_("Slug"), max_length=100)
+
+    class Meta:
+        ordering = ("queue", "name")
+        unique_together = (("queue", "slug"),)
+        verbose_name = _("Queue service area")
+        verbose_name_plural = _("Queue service areas")
+
+    def __str__(self):
+        return f"{self.queue.title}: {self.name}"
+
+
+class QueueMember(models.Model):
+    """
+    A staff member taking tickets from a given queue. Records whether the
+    member is currently available (working hours / leave) and the service
+    areas they cover. The automatic ticket router uses this information.
+
+    ``work_schedule`` maps ISO weekdays ("1".."7", Monday first) to lists
+    of ["HH:MM", "HH:MM"] slots, evaluated in the current time zone. An
+    empty schedule means the member is available at any time.
+    Example: {"1": [["09:00", "12:00"], ["13:00", "18:00"]], "2": [...]}
+    """
+
+    queue = models.ForeignKey(
+        Queue,
+        on_delete=models.CASCADE,
+        related_name="members",
+        verbose_name=_("Queue"),
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="queue_memberships",
+        verbose_name=_("User"),
+    )
+    active = models.BooleanField(
+        _("Accepting tickets"),
+        default=True,
+        help_text=_(
+            "Untick to exclude this member from automatic assignment "
+            "(e.g. while on leave)."
+        ),
+    )
+    leave_until = models.DateTimeField(
+        _("Unavailable until"),
+        blank=True,
+        null=True,
+        help_text=_(
+            "If set, the member is skipped by auto-assignment until this time."
+        ),
+    )
+    work_schedule = models.JSONField(
+        _("Working hours"),
+        blank=True,
+        null=True,
+        default=dict,
+        help_text=_(
+            'Weekly schedule as JSON, e.g. {"1": [["09:00", "18:00"]]}. '
+            "Weekdays are 1 (Monday) to 7 (Sunday). Leave empty for any time."
+        ),
+    )
+    service_areas = models.ManyToManyField(
+        QueueServiceArea,
+        blank=True,
+        related_name="members",
+        verbose_name=_("Service areas"),
+        help_text=_(
+            "Areas served by this member. Leave empty to serve every area of the queue."
+        ),
+    )
+    created = models.DateTimeField(_("Created"), auto_now_add=True)
+    modified = models.DateTimeField(_("Modified"), auto_now=True)
+
+    class Meta:
+        ordering = ("queue", "user__username")
+        unique_together = (("queue", "user"),)
+        verbose_name = _("Queue member")
+        verbose_name_plural = _("Queue members")
+
+    def __str__(self):
+        return f"{self.user} ({self.queue.title})"
+
+    def clean(self):
+        super().clean()
+        schedule = self.work_schedule or {}
+        if not isinstance(schedule, dict):
+            raise ValidationError(_("Working hours must be a JSON object."))
+        for weekday, slots in schedule.items():
+            if str(weekday) not in {"1", "2", "3", "4", "5", "6", "7"}:
+                raise ValidationError(_("Working hours keys must be weekdays 1-7."))
+            if not isinstance(slots, (list, tuple)):
+                raise ValidationError(_("Each weekday must contain a list of slots."))
+            for slot in slots:
+                if not isinstance(slot, (list, tuple)) or len(slot) != 2:
+                    raise ValidationError(_("Each slot must be [start, end]."))
+                try:
+                    start, end = _parse_hhmm(slot[0]), _parse_hhmm(slot[1])
+                except (TypeError, ValueError) as e:
+                    raise ValidationError(_("Invalid slot time.")) from e
+                if start >= end:
+                    raise ValidationError(_("Slot start must be before its end."))
+
+    def is_available(self, at=None):
+        """Whether the member may receive new tickets at time ``at``."""
+        if not self.active:
+            return False
+        if at is None:
+            at = timezone.now()
+        if timezone.is_naive(at):
+            at = timezone.make_aware(at)
+        if self.leave_until:
+            leave_until = self.leave_until
+            if timezone.is_naive(leave_until):
+                leave_until = timezone.make_aware(leave_until)
+            if at < leave_until:
+                return False
+        schedule = self.work_schedule or {}
+        if not schedule:
+            return True
+        local = timezone.localtime(at)
+        slots = schedule.get(str(local.isoweekday()))
+        if not slots:
+            return False
+        minutes = local.hour * 60 + local.minute
+        for slot in slots:
+            try:
+                start, end = _parse_hhmm(slot[0]), _parse_hhmm(slot[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if start <= minutes < end:
+                return True
+        return False
+
+    def serves(self, ticket=None, service_area=None):
+        """Whether the member covers the given ticket/service area.
+
+        A member with no declared areas serves everything, and a ticket
+        without a service area can be taken by any member.
+        """
+        area = service_area
+        if area is None and ticket is not None:
+            area = ticket.service_area
+        if area is None or not self.pk:
+            return area is None
+        # Iterating .all() reuses a prefetched queryset when the caller
+        # prefetched service_areas.
+        areas = list(self.service_areas.all())
+        if not areas:
+            return True
+        area_id = getattr(area, "id", area)
+        return any(a.id == area_id for a in areas)
+
+
 def mk_secret():
     return str(uuid.uuid4())
 
@@ -628,6 +805,16 @@ class Ticket(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
+    )
+
+    service_area = models.ForeignKey(
+        "QueueServiceArea",
+        verbose_name=_("Service area"),
+        related_name="tickets",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text=_("The service area required to handle this ticket."),
     )
 
     class Meta:
@@ -1198,6 +1385,66 @@ class FollowUp(models.Model):
                 )
 
         return datetime.timedelta(seconds=time_spent_seconds)
+
+
+class AssignmentRecord(models.Model):
+    """
+    Ledger entry of a ticket being handed to a user. The automatic router
+    uses recent entries to spread the load ("least recently/fewest assigned"),
+    and the entry explains why an owner changed.
+    """
+
+    KIND_AUTO = "auto"
+    KIND_MANUAL = "manual"
+    KIND_TAKE = "take"
+    KIND_REASSIGN = "reassign"
+    KIND_CHOICES = (
+        (KIND_AUTO, _("Automatic assignment")),
+        (KIND_MANUAL, _("Manual assignment")),
+        (KIND_TAKE, _("Claimed by user")),
+        (KIND_REASSIGN, _("Automatic reassignment")),
+    )
+
+    ticket = models.ForeignKey(
+        Ticket,
+        on_delete=models.CASCADE,
+        related_name="assignment_records",
+        verbose_name=_("Ticket"),
+    )
+    queue = models.ForeignKey(
+        Queue,
+        on_delete=models.CASCADE,
+        related_name="assignment_records",
+        verbose_name=_("Queue"),
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="assignment_records",
+        verbose_name=_("Assigned user"),
+    )
+    previous_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        verbose_name=_("Previous user"),
+    )
+    kind = models.CharField(
+        _("Kind"), max_length=10, choices=KIND_CHOICES, default=KIND_AUTO
+    )
+    assigned_at = models.DateTimeField(
+        _("Assigned at"), default=timezone.now, db_index=True
+    )
+
+    class Meta:
+        ordering = ("-assigned_at",)
+        verbose_name = _("Assignment record")
+        verbose_name_plural = _("Assignment records")
+
+    def __str__(self):
+        return f"{self.ticket_id} -> {self.user_id} ({self.kind})"
 
 
 class TicketChangeQuerySet(models.QuerySet):

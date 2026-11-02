@@ -11,6 +11,7 @@ from helpdesk.decorators import (
 )
 from helpdesk.lib import process_attachments, safe_template_context
 from helpdesk.models import (
+    AssignmentRecord,
     FollowUp,
     Ticket,
     TicketCC,
@@ -453,6 +454,15 @@ def update_ticket(
     f.email_recipients = sorted(emailed_to)
     f.save()
     ticket.save()
+
+    if reassigned and ticket.assigned_to_id:
+        AssignmentRecord.objects.create(
+            ticket=ticket,
+            queue=ticket.queue,
+            user=ticket.assigned_to,
+            previous_user=old_owner,
+            kind=AssignmentRecord.KIND_MANUAL,
+        )
 
     create_ticket_backlinks(ticket, f, user=user if is_helpdesk_staff(user) else None)
 
