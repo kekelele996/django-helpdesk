@@ -1,0 +1,1 @@
+{% load i18n %}{% blocktrans trimmed with title=saved_search.title %}Daily digest: {{ title }}{% endblocktrans %}

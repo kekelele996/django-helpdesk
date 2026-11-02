@@ -1685,6 +1685,27 @@ class SavedSearch(models.Model):
         help_text=_("Pickled query object. Be wary changing this."),
     )
 
+    digest_enabled = models.BooleanField(
+        _("Daily digest enabled"),
+        blank=True,
+        default=False,
+        help_text=_(
+            "Send the owner a daily e-mail with tickets that are new, "
+            "changed status or were reopened since the last digest."
+        ),
+    )
+
+    # Watermark for the daily digest: everything up to this point in time has
+    # already been covered by a digest (or by an empty digest run). It only
+    # moves forward after an e-mail was accepted for sending, so a failed
+    # send retries the same window without skipping or duplicating changes.
+    digest_last_success_at = models.DateTimeField(
+        _("Last successful digest at"),
+        blank=True,
+        null=True,
+        help_text=_("Point in time covered by the last digest e-mail."),
+    )
+
     def __str__(self):
         if self.shared:
             return f"{self.title} (*)"
@@ -1694,6 +1715,69 @@ class SavedSearch(models.Model):
     class Meta:
         verbose_name = _("Saved search")
         verbose_name_plural = _("Saved searches")
+
+
+class SavedSearchDigestEvent(models.Model):
+    """
+    One ticket event (new ticket, status change or reopening) that was already
+    included in a saved-search digest e-mail.
+
+    Rows are appended in the same transaction that moves the digest watermark
+    forward, immediately after the e-mail was accepted for sending. The unique
+    key is the hard backstop that makes retries and overlapping digest windows
+    idempotent: a given change is delivered at most once per saved search.
+    """
+
+    EVENT_NEW = "new"
+    EVENT_STATUS = "status"
+    EVENT_REOPENED = "reopened"
+    EVENT_CHOICES = (
+        (EVENT_NEW, _("New ticket")),
+        (EVENT_STATUS, _("Status change")),
+        (EVENT_REOPENED, _("Reopened")),
+    )
+
+    saved_search = models.ForeignKey(
+        SavedSearch,
+        on_delete=models.CASCADE,
+        related_name="digest_events",
+        verbose_name=_("Saved search"),
+    )
+
+    ticket = models.ForeignKey(
+        Ticket,
+        on_delete=models.CASCADE,
+        verbose_name=_("Ticket"),
+    )
+
+    # Null for "new ticket" events; points at the FollowUp carrying the
+    # new_status for status-change / reopened events.
+    followup = models.ForeignKey(
+        "FollowUp",
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+        verbose_name=_("Follow-up"),
+    )
+
+    event_type = models.CharField(
+        _("Event type"),
+        max_length=20,
+        choices=EVENT_CHOICES,
+    )
+
+    sent_at = models.DateTimeField(
+        _("Sent at"),
+        default=timezone.now,
+    )
+
+    def __str__(self):
+        return f"{self.saved_search_id}:{self.event_type}:{self.ticket_id}:{self.followup_id}"
+
+    class Meta:
+        unique_together = [("saved_search", "ticket", "followup", "event_type")]
+        verbose_name = _("Saved search digest event")
+        verbose_name_plural = _("Saved search digest events")
 
 
 def get_default_setting(setting):

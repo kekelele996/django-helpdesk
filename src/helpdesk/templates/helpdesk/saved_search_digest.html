@@ -1,0 +1,53 @@
+{% load i18n %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% blocktrans with title=saved_search.title %}Daily digest: {{ title }}{% endblocktrans %}</title>
+</head>
+<body style="font-family: sans-serif; color: #212529;">
+  <h2>{% blocktrans with title=saved_search.title %}Daily digest: {{ title }}{% endblocktrans %}</h2>
+  <p>{% blocktrans with start=window_start|date:"Y-m-d H:i" end=window_end|date:"Y-m-d H:i" %}Changes from {{ start }} to {{ end }}{% endblocktrans %}</p>
+
+  {% if new_tickets %}
+    <h3>{% blocktrans with count=new_tickets|length %}New tickets ({{ count }}){% endblocktrans %}</h3>
+    <table cellpadding="4" cellspacing="0" border="0" width="100%" style="border-collapse: collapse;">
+      {% for ticket in new_tickets %}
+        <tr style="border-bottom: 1px solid #dee2e6;">
+          <td style="white-space: nowrap;">#{{ ticket.id }}</td>
+          <td><a href="{{ ticket.staff_url }}">{{ ticket.title }}</a></td>
+          <td style="white-space: nowrap;">{{ ticket.queue.title }}</td>
+          <td style="white-space: nowrap;">{{ ticket.get_status_display }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+  {% if reopened_followups %}
+    <h3>{% blocktrans with count=reopened_followups|length %}Reopened ({{ count }}){% endblocktrans %}</h3>
+    <table cellpadding="4" cellspacing="0" border="0" width="100%" style="border-collapse: collapse;">
+      {% for followup in reopened_followups %}
+        <tr style="border-bottom: 1px solid #dee2e6;">
+          <td style="white-space: nowrap;">#{{ followup.ticket.id }}</td>
+          <td><a href="{{ followup.ticket.staff_url }}">{{ followup.ticket.title }}</a></td>
+          <td style="white-space: nowrap;">{{ followup.date|date:"Y-m-d H:i" }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+  {% if status_followups %}
+    <h3>{% blocktrans with count=status_followups|length %}Status changes ({{ count }}){% endblocktrans %}</h3>
+    <table cellpadding="4" cellspacing="0" border="0" width="100%" style="border-collapse: collapse;">
+      {% for followup in status_followups %}
+        <tr style="border-bottom: 1px solid #dee2e6;">
+          <td style="white-space: nowrap;">#{{ followup.ticket.id }}</td>
+          <td><a href="{{ followup.ticket.staff_url }}">{{ followup.ticket.title }}</a></td>
+          <td style="white-space: nowrap;">&rarr; {{ followup.get_new_status_display }}</td>
+          <td style="white-space: nowrap;">{{ followup.date|date:"Y-m-d H:i" }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+</body>
+</html>

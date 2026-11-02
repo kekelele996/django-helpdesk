@@ -1,0 +1,19 @@
+{% load i18n %}{% blocktrans trimmed with title=saved_search.title start=window_start end=window_end %}
+Daily digest for saved search "{{ title }}" ({{ start }} to {{ end }})
+{% endblocktrans %}
+{% if new_tickets %}
+{% blocktrans with count=new_tickets|length %}New tickets ({{ count }}):{% endblocktrans %}
+{% for ticket in new_tickets %}#{{ ticket.id }} {{ ticket.title }} ({{ ticket.queue.title }}, {{ ticket.get_status_display }})
+{{ ticket.staff_url }}
+{% endfor %}
+{% endif %}{% if reopened_followups %}
+{% blocktrans with count=reopened_followups|length %}Reopened ({{ count }}):{% endblocktrans %}
+{% for followup in reopened_followups %}#{{ followup.ticket.id }} {{ followup.ticket.title }} - {{ followup.date|date:"Y-m-d H:i" }}
+{{ followup.ticket.staff_url }}
+{% endfor %}
+{% endif %}{% if status_followups %}
+{% blocktrans with count=status_followups|length %}Status changes ({{ count }}):{% endblocktrans %}
+{% for followup in status_followups %}#{{ followup.ticket.id }} {{ followup.ticket.title }} -> {{ followup.get_new_status_display }} ({{ followup.date|date:"Y-m-d H:i" }})
+{{ followup.ticket.staff_url }}
+{% endfor %}
+{% endif %}

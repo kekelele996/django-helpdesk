@@ -55,6 +55,7 @@ MARKER = "SWEEPMARKER_FOREIGN_QUEUE_CONTENT"
 NO_TICKET_DATA = {
     "savequery": "stores a search definition, returns no ticket",
     "delete_query": "acts on a SavedSearch owned by the caller",
+    "toggle_saved_search_digest": "acts on a SavedSearch owned by the caller",
     "user_settings": "the caller's own UserSettings",
     "email_ignore": "IgnoreEmail rows, not tickets",
     "email_ignore_add": "IgnoreEmail rows, not tickets",

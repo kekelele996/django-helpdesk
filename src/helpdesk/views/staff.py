@@ -39,6 +39,7 @@ from django.utils.html import escape
 from django.utils.timezone import now
 from django.utils.translation import gettext as _
 from django.views.decorators.csrf import requires_csrf_token
+from django.views.decorators.http import require_POST
 from django.views.generic.edit import FormView, UpdateView
 from rest_framework import status
 from rest_framework.decorators import api_view
@@ -1935,6 +1936,28 @@ def delete_saved_query(request, pk):
         return render(
             request, "helpdesk/confirm_delete_saved_query.html", {"query": query}
         )
+
+
+@helpdesk_staff_member_required
+@require_POST
+def toggle_saved_search_digest(request, pk):
+    """Turn the daily digest for one of the current user's saved searches on/off."""
+    query = get_object_or_404(SavedSearch, id=pk, user=request.user)
+    query.digest_enabled = not query.digest_enabled
+    query.save(update_fields=["digest_enabled"])
+    if query.digest_enabled:
+        messages.success(
+            request,
+            _("Daily digest enabled for saved search '%(title)s'.")
+            % {"title": query.title},
+        )
+    else:
+        messages.success(
+            request,
+            _("Daily digest disabled for saved search '%(title)s'.")
+            % {"title": query.title},
+        )
+    return HttpResponseRedirect(reverse("helpdesk:saved_searches_list"))
 
 
 class EditUserSettingsView(MustBeStaffMixin, UpdateView):

@@ -135,6 +135,11 @@ if helpdesk_settings.HELPDESK_UI_ENABLED:
         path("saved-searches/", staff.saved_searches_list, name="saved_searches_list"),
         path("save_query/", staff.save_query, name="savequery"),
         path("delete_query/<int:pk>/", staff.delete_saved_query, name="delete_query"),
+        path(
+            "saved-searches/<int:pk>/toggle-digest/",
+            staff.toggle_saved_search_digest,
+            name="toggle_saved_search_digest",
+        ),
         path("settings/", staff.EditUserSettingsView.as_view(), name="user_settings"),
         path("ignore/", staff.email_ignore, name="email_ignore"),
         path("ignore/add/", staff.email_ignore_add, name="email_ignore_add"),
