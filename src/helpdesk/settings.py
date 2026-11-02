@@ -579,6 +579,38 @@ HELPDESK_GET_NEW_TICKET_WEBHOOK_URLS = getattr(
 
 HELPDESK_WEBHOOK_TIMEOUT = getattr(settings, "HELPDESK_WEBHOOK_TIMEOUT", 3)
 
+# Every webhook notification is persisted in the database before delivery is
+# attempted, and failures are retried by the sweeper (management command or
+# Celery task). These settings control that durable delivery pipeline.
+
+# Attempt the first delivery synchronously when the event is emitted, i.e. the
+# historical behaviour where webhooks fire straight away on ticket update. When
+# False, events are only persisted and the sweeper is responsible for delivery.
+HELPDESK_WEBHOOK_SYNC_SEND = getattr(settings, "HELPDESK_WEBHOOK_SYNC_SEND", True)
+
+# Total delivery attempts (including the first one) before a delivery is moved
+# to the quarantined state instead of being retried further.
+HELPDESK_WEBHOOK_MAX_ATTEMPTS = getattr(settings, "HELPDESK_WEBHOOK_MAX_ATTEMPTS", 5)
+
+# Delay in seconds before retry attempt #1, #2, ... The last value is reused
+# for any further attempts. Defaults to 30s, 1m, 2m, 5m, 10m.
+HELPDESK_WEBHOOK_RETRY_INTERVALS = getattr(
+    settings,
+    "HELPDESK_WEBHOOK_RETRY_INTERVALS",
+    (30, 60, 120, 300, 600),
+)
+
+# Maximum number of due deliveries handled in one sweeper run.
+HELPDESK_WEBHOOK_BATCH_SIZE = getattr(settings, "HELPDESK_WEBHOOK_BATCH_SIZE", 100)
+
+# HTTP status codes treated as successful delivery. Everything else (and any
+# network error) schedules a retry.
+HELPDESK_WEBHOOK_SUCCESS_STATUS = getattr(
+    settings,
+    "HELPDESK_WEBHOOK_SUCCESS_STATUS",
+    lambda status: 200 <= status < 300,
+)
+
 
 LOG_WARN_WHEN_CC_EMAIL_NOT_LINKED_TO_A_USER = getattr(
     settings, "HELPDESK_LOG_WARN_WHEN_CC_EMAIL_NOT_LINKED_TO_A_USER", False

@@ -2307,3 +2307,169 @@ class ChecklistTask(models.Model):
 
     def __str__(self):
         return self.description
+
+
+class WebhookDelivery(models.Model):
+    """
+    A durable record of one webhook notification sent to one external URL.
+
+    Rows are created *before* the HTTP request is attempted (transactional
+    outbox), so a crash or a receiving service being temporarily unavailable
+    can never silently drop an event: pending rows are picked up later by the
+    retry sweeper (management command or Celery task). The same ``event_id``
+    is sent on every redelivery as the ``Idempotency-Key`` header so receivers
+    can deduplicate. Rows that keep failing past the attempt limit are moved to
+    the ``quarantined`` state instead of being retried forever.
+    """
+
+    EVENT_NEW_TICKET = "new_ticket"
+    EVENT_FOLLOWUP = "followup"
+    EVENT_CHOICES = (
+        (EVENT_NEW_TICKET, _("New ticket")),
+        (EVENT_FOLLOWUP, _("Follow-up")),
+    )
+
+    #: Waiting for its first attempt or a scheduled retry.
+    STATUS_PENDING = "pending"
+    #: Delivered successfully (terminal state).
+    STATUS_SUCCESS = "success"
+    #: Failed too many times; kept separately for inspection / manual replay.
+    STATUS_QUARANTINED = "quarantined"
+    STATUS_CHOICES = (
+        (STATUS_PENDING, _("Pending")),
+        (STATUS_SUCCESS, _("Success")),
+        (STATUS_QUARANTINED, _("Quarantined")),
+    )
+
+    #: Stable identifier of the logical event, reused on redelivery as the
+    #: Idempotency-Key header. Deterministic per event+destination so that
+    #: duplicate signal dispatch can never create duplicate deliveries.
+    event_id = models.CharField(
+        _("Event ID"),
+        max_length=128,
+        db_index=True,
+        editable=False,
+    )
+    event_type = models.CharField(
+        _("Event type"),
+        max_length=32,
+        choices=EVENT_CHOICES,
+    )
+    url = models.URLField(_("Destination URL"), max_length=500)
+    payload = models.JSONField(_("Payload"))
+
+    status = models.CharField(
+        _("Status"),
+        max_length=16,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+    )
+    attempts = models.PositiveIntegerField(_("Attempts"), default=0)
+    #: The row is not eligible for (re)delivery before this time, implementing
+    #: the retry interval / back-off schedule.
+    not_before = models.DateTimeField(_("Not before"), default=timezone.now)
+    last_error = models.TextField(_("Last failure reason"), blank=True, default="")
+    last_response_status = models.PositiveIntegerField(
+        _("Last HTTP response status"),
+        null=True,
+        blank=True,
+    )
+
+    ticket = models.ForeignKey(
+        Ticket,
+        verbose_name=_("Ticket"),
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="webhook_deliveries",
+    )
+    followup = models.ForeignKey(
+        FollowUp,
+        verbose_name=_("Follow-up"),
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="webhook_deliveries",
+    )
+
+    created = models.DateTimeField(_("Created"), auto_now_add=True)
+    modified = models.DateTimeField(_("Modified"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("Webhook delivery")
+        verbose_name_plural = _("Webhook deliveries")
+        ordering = ("created",)
+        constraints = (
+            models.UniqueConstraint(
+                fields=["event_id", "url"],
+                name="helpdesk_webhook_event_url_unique",
+            ),
+        )
+        indexes = (models.Index(fields=["status", "not_before"]),)
+
+    def __str__(self):
+        return f"{self.event_id} -> {self.url} ({self.status})"
+
+    @property
+    def is_due(self):
+        return self.status == self.STATUS_PENDING and self.not_before <= timezone.now()
+
+    def mark_success(self):
+        self.status = self.STATUS_SUCCESS
+        self.not_before = timezone.now()
+        self.last_error = ""
+        self.last_response_status = None
+        self.save(
+            update_fields=[
+                "status",
+                "not_before",
+                "last_error",
+                "last_response_status",
+                "modified",
+            ]
+        )
+
+    def mark_failure(self, reason, max_attempts, intervals, response_status=None):
+        """Record the latest failed attempt, scheduling a retry or quarantining.
+
+        ``attempts`` is expected to already have been incremented by the caller.
+        ``intervals`` is a non-empty sequence of per-attempt delays in seconds;
+        the final interval is reused once the sequence is exhausted.
+        """
+        self.last_error = reason
+        self.last_response_status = response_status
+        if self.attempts >= max_attempts:
+            self.status = self.STATUS_QUARANTINED
+        else:
+            intervals = tuple(intervals)
+            delay = intervals[min(self.attempts - 1, len(intervals) - 1)]
+            self.not_before = timezone.now() + datetime.timedelta(seconds=delay)
+        self.save(
+            update_fields=[
+                "attempts",
+                "last_error",
+                "last_response_status",
+                "status",
+                "not_before",
+                "modified",
+            ]
+        )
+        return self.status
+
+    def requeue(self):
+        """Move a quarantined row back into the retry queue."""
+        self.status = self.STATUS_PENDING
+        self.attempts = 0
+        self.not_before = timezone.now()
+        self.last_error = ""
+        self.last_response_status = None
+        self.save(
+            update_fields=[
+                "status",
+                "attempts",
+                "not_before",
+                "last_error",
+                "last_response_status",
+                "modified",
+            ]
+        )

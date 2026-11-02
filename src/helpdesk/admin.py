@@ -19,6 +19,7 @@ from helpdesk.models import (
     Queue,
     Ticket,
     TicketChange,
+    WebhookDelivery,
 )
 
 if helpdesk_settings.HELPDESK_KB_ENABLED:
@@ -155,6 +156,55 @@ class ChecklistAdmin(admin.ModelAdmin):
     autocomplete_fields = ("ticket",)
     list_select_related = ("ticket",)
     inlines = (ChecklistTaskInline,)
+
+
+@admin.register(WebhookDelivery)
+class WebhookDeliveryAdmin(admin.ModelAdmin):
+    list_display = (
+        "event_id",
+        "event_type",
+        "url",
+        "status",
+        "attempts",
+        "not_before",
+        "last_response_status",
+        "created",
+    )
+    list_filter = ("status", "event_type")
+    search_fields = ("event_id", "url", "last_error")
+    date_hierarchy = "created"
+    readonly_fields = (
+        "event_id",
+        "event_type",
+        "url",
+        "payload",
+        "status",
+        "attempts",
+        "not_before",
+        "last_error",
+        "last_response_status",
+        "ticket",
+        "followup",
+        "created",
+        "modified",
+    )
+    actions: ClassVar = ["requeue_quarantined"]
+
+    def has_add_permission(self, request):
+        # Rows are created by the application when events fire.
+        return False
+
+    @admin.action(description=_("Requeue selected quarantined deliveries for retry"))
+    def requeue_quarantined(self, request, queryset):
+        count = 0
+        for delivery in queryset.filter(status=WebhookDelivery.STATUS_QUARANTINED):
+            delivery.requeue()
+            count += 1
+        self.message_user(
+            request,
+            _("%(count)d delivery/deliveries moved back into the retry queue.")
+            % {"count": count},
+        )
 
 
 admin.site.register(PreSetReply)
