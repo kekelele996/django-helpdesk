@@ -807,6 +807,72 @@ class MultipleTicketSelectForm(forms.Form):
         return tickets
 
 
+class QueueMigrationForm(forms.Form):
+    """Step 1 of the batch queue migration: pick tickets and a target queue."""
+
+    tickets = forms.ModelMultipleChoiceField(
+        label=_("Tickets to migrate"),
+        queryset=Ticket.objects.none(),
+        widget=forms.SelectMultiple(attrs={"class": "form-control", "size": 12}),
+        help_text=_(
+            "Hold Ctrl (or Cmd) to select several tickets. Tickets already "
+            "merged into another ticket are not listed."
+        ),
+    )
+    target_queue = forms.ModelChoiceField(
+        label=_("Target queue"),
+        queryset=Queue.objects.none(),
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    reason = forms.CharField(
+        label=_("Reason (optional)"),
+        required=False,
+        max_length=200,
+        widget=forms.TextInput(attrs={"class": "form-control"}),
+        help_text=_("Recorded on the private migration note of each ticket."),
+    )
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        if user is not None:
+            huser = HelpdeskUser(user)
+            self.fields["tickets"].queryset = huser.accessible_tickets().filter(
+                merged_to=None
+            )
+            self.fields["target_queue"].queryset = Queue.objects.filter(
+                pk__in=[q.pk for q in huser.accessible_queues()]
+            )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        tickets = cleaned_data.get("tickets")
+        target_queue = cleaned_data.get("target_queue")
+        if not tickets or not target_queue:
+            return cleaned_data
+
+        huser = HelpdeskUser(self.user) if self.user is not None else None
+        # Moving a ticket out of a queue requires access to that source queue,
+        # even for tickets merely assigned to the operator.
+        inaccessible = [
+            t for t in tickets if not huser or not huser.can_access_queue(t.queue)
+        ]
+        if inaccessible:
+            raise ValidationError(
+                _(
+                    "You do not have access to the source queue of ticket(s): "
+                    "%(ticket_ids)s"
+                )
+                % {"ticket_ids": ", ".join(str(t.id) for t in inaccessible[:10])}
+            )
+
+        if all(t.queue_id == target_queue.id for t in tickets):
+            raise ValidationError(
+                _("All selected tickets are already in the target queue.")
+            )
+        return cleaned_data
+
+
 class ChecklistTemplateForm(forms.ModelForm):
     name = forms.CharField(
         widget=forms.TextInput(attrs={"class": "form-control"}),

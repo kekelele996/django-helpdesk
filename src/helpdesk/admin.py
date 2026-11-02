@@ -17,6 +17,8 @@ from helpdesk.models import (
     KBIAttachment,
     PreSetReply,
     Queue,
+    QueueMigration,
+    QueueMigrationItem,
     Ticket,
     TicketChange,
 )
@@ -155,6 +157,42 @@ class ChecklistAdmin(admin.ModelAdmin):
     autocomplete_fields = ("ticket",)
     list_select_related = ("ticket",)
     inlines = (ChecklistTaskInline,)
+
+
+class QueueMigrationItemInline(admin.TabularInline):
+    model = QueueMigrationItem
+    extra = 0
+    can_delete = False
+    readonly_fields = ("ticket", "source_queue", "status", "followup")
+
+
+@admin.register(QueueMigration)
+class QueueMigrationAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "target_queue",
+        "status",
+        "created_by",
+        "created_at",
+        "confirmed_at",
+    )
+    list_filter = ("status", "target_queue")
+    search_fields = ("id", "target_queue__title", "created_by__username")
+    readonly_fields = (
+        "target_queue",
+        "created_by",
+        "created_at",
+        "confirmed_at",
+        "status",
+        "reason",
+    )
+    inlines = (QueueMigrationItemInline,)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 admin.site.register(PreSetReply)

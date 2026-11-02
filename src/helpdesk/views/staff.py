@@ -61,6 +61,7 @@ from helpdesk.forms import (
     EmailIgnoreForm,
     FormControlDeleteFormSet,
     MultipleTicketSelectForm,
+    QueueMigrationForm,
     TicketCCEmailForm,
     TicketCCForm,
     TicketCCUserForm,
@@ -68,6 +69,15 @@ from helpdesk.forms import (
     TicketForm,
     TicketResolvesForm,
     UserSettingsForm,
+)
+from helpdesk.queue_migration import (
+    MigrationConflict,
+    MigrationPermissionError,
+    QueueMigrationError,
+    build_preview_data,
+    cancel_preview,
+    create_preview,
+    perform_migration,
 )
 from helpdesk.lib import (
     get_assignable_users,
@@ -84,6 +94,7 @@ from helpdesk.models import (
     IgnoreEmail,
     PreSetReply,
     Queue,
+    QueueMigration,
     SavedSearch,
     Ticket,
     TicketCC,
@@ -869,6 +880,13 @@ def mass_update(request):
             + "?"
             + "&".join([f"tickets={ticket_id}" for ticket_id in tickets])
         )
+    elif action == "migrate_queue":
+        # Redirect to the batch queue migration wizard with selected tickets
+        return redirect(
+            reverse("helpdesk:queue_migration_create")
+            + "?"
+            + "&".join([f"tickets={ticket_id}" for ticket_id in tickets])
+        )
 
     huser = HelpdeskUser(request.user)
     for t in Ticket.objects.filter(id__in=tickets):
@@ -964,6 +982,96 @@ def mass_update(request):
             t.delete()
 
     return HttpResponseRedirect(reverse("helpdesk:list"))
+
+
+@helpdesk_staff_member_required
+def queue_migration_create(request):
+    """Step 1: select tickets and a target queue, then build the preview."""
+    if request.method == "POST":
+        form = QueueMigrationForm(request.POST, user=request.user)
+        if form.is_valid():
+            try:
+                migration = create_preview(
+                    operator=request.user,
+                    tickets=form.cleaned_data["tickets"],
+                    target_queue=form.cleaned_data["target_queue"],
+                    reason=form.cleaned_data.get("reason", ""),
+                )
+            except QueueMigrationError as exc:
+                messages.error(request, str(exc))
+            else:
+                return redirect(
+                    "helpdesk:queue_migration_detail", migration_id=migration.id
+                )
+    else:
+        form = QueueMigrationForm(request.GET or None, user=request.user)
+
+    return render(
+        request,
+        "helpdesk/queue_migration_form.html",
+        {"form": form},
+    )
+
+
+@helpdesk_staff_member_required
+def queue_migration_detail(request, migration_id):
+    """Step 2: inspect the preview, confirm (atomic) or cancel; view results."""
+    migration = get_object_or_404(
+        QueueMigration.objects.select_related("target_queue"), pk=migration_id
+    )
+    # A batch belongs to its operator. Superusers may inspect any batch.
+    if not (
+        request.user.is_superuser or migration.created_by_id == request.user.id
+    ):
+        raise PermissionDenied()
+
+    if request.method == "POST" and migration.status == QueueMigration.PREVIEWED:
+        if request.POST.get("action") == "cancel":
+            try:
+                cancel_preview(request.user, migration)
+            except QueueMigrationError as exc:
+                messages.error(request, str(exc))
+            else:
+                messages.success(request, _("Migration preview cancelled."))
+            return HttpResponseRedirect(reverse("helpdesk:list"))
+
+        try:
+            summary = perform_migration(request.user, migration)
+        except MigrationPermissionError as exc:
+            raise PermissionDenied(str(exc))
+        except (QueueMigrationError, MigrationConflict) as exc:
+            # MigrationConflict is a QueueMigrationError subclass; kept
+            # explicit to document that nothing was changed in this case.
+            messages.error(
+                request,
+                _(
+                    "Migration failed and the whole batch was rolled back, "
+                    "no ticket was changed: %(error)s"
+                )
+                % {"error": str(exc)},
+            )
+        else:
+            messages.success(
+                request,
+                _(
+                    "%(migrated)d ticket(s) migrated to queue \"%(queue)s\"; "
+                    "%(unchanged)d were already in the target queue and were "
+                    "left untouched."
+                )
+                % {
+                    "migrated": len(summary["migrated"]),
+                    "unchanged": len(summary["unchanged"]),
+                    "queue": migration.target_queue.title,
+                },
+            )
+        migration.refresh_from_db()
+
+    preview = build_preview_data(migration)
+    return render(
+        request,
+        "helpdesk/queue_migration_detail.html",
+        {"preview": preview},
+    )
 
 
 # Prepare ticket attributes which will be displayed in the table to choose

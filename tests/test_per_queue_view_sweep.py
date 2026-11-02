@@ -37,6 +37,8 @@ from helpdesk.models import (
     FollowUp,
     FollowUpAttachment,
     Queue,
+    QueueMigration,
+    QueueMigrationItem,
     Ticket,
     TicketCC,
     TicketDependency,
@@ -152,6 +154,16 @@ class ForeignQueueSweepTestCase(TestCase):
         self.foreign_dependency = TicketDependency.objects.create(
             ticket=self.foreign, depends_on=self.my_ticket
         )
+        # A batch migration owned by somebody else, snapshotting the foreign
+        # ticket. Its detail page must refuse the restricted operator.
+        self.foreign_migration = QueueMigration.objects.create(
+            target_queue=self.theirs, created_by=self.victim
+        )
+        QueueMigrationItem.objects.create(
+            migration=self.foreign_migration,
+            ticket=self.foreign,
+            source_queue=self.theirs,
+        )
         self.client.login(username="restricted", password="pass")
 
     def foreign_kwargs(self, names):
@@ -224,6 +236,7 @@ class ForeignQueueSweepTestCase(TestCase):
             "user_name": self.victim.username,
             "queue_slug": self.theirs.slug,
             "report": "queuestatus",
+            "migration_id": self.foreign_migration.id,
             "query": query_to_base64(
                 {"filtering": {}, "sorting": "created", "search_string": ""}
             ),

@@ -2230,6 +2230,138 @@ class TicketDependency(models.Model):
         return f"{self.ticket} / {self.depends_on}"
 
 
+class QueueMigration(models.Model):
+    """
+    A batch of tickets moved together from their current queues to one
+    target queue.
+
+    The row is created when the preview is generated (status "previewed") and
+    holds the operator's selection. Confirmation executes every item inside a
+    single transaction; a failure rolls the whole batch back and leaves the
+    migration in "previewed" so it can be retried. Re-confirming a completed
+    migration performs no changes.
+    """
+
+    PREVIEWED = "previewed"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    STATUS_CHOICES = (
+        (PREVIEWED, _("Previewed, awaiting confirmation")),
+        (COMPLETED, _("Completed")),
+        (CANCELLED, _("Cancelled")),
+    )
+
+    target_queue = models.ForeignKey(
+        Queue,
+        on_delete=models.PROTECT,
+        related_name="incoming_queue_migrations",
+        verbose_name=_("Target queue"),
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="queue_migrations",
+        verbose_name=_("Created by"),
+    )
+
+    created_at = models.DateTimeField(_("Created"), auto_now_add=True)
+
+    confirmed_at = models.DateTimeField(_("Confirmed"), blank=True, null=True)
+
+    status = models.CharField(
+        _("Status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=PREVIEWED,
+        db_index=True,
+    )
+
+    reason = models.CharField(
+        _("Reason"),
+        max_length=200,
+        blank=True,
+        help_text=_("Optional note recorded on the migration follow-ups."),
+    )
+
+    class Meta:
+        ordering = ("-created_at",)
+        verbose_name = _("Queue migration")
+        verbose_name_plural = _("Queue migrations")
+
+    def __str__(self):
+        return f"#{self.id} -> {self.target_queue} ({self.status})"
+
+
+class QueueMigrationItem(models.Model):
+    """
+    One ticket belonging to a QueueMigration.
+
+    source_queue snapshots the queue the ticket lived in at preview time. At
+    confirmation the ticket is re-checked against the snapshot: if it was
+    moved in the meantime the whole batch is refused. The followup created by
+    the move (if any) is kept for audit.
+    """
+
+    PENDING = "pending"
+    MIGRATED = "migrated"
+    UNCHANGED = "unchanged"
+    STATUS_CHOICES = (
+        (PENDING, _("Pending")),
+        (MIGRATED, _("Migrated")),
+        (UNCHANGED, _("Already in target queue")),
+    )
+
+    migration = models.ForeignKey(
+        QueueMigration,
+        on_delete=models.CASCADE,
+        related_name="items",
+        verbose_name=_("Queue migration"),
+    )
+
+    ticket = models.ForeignKey(
+        Ticket,
+        on_delete=models.PROTECT,
+        related_name="queue_migration_items",
+        verbose_name=_("Ticket"),
+    )
+
+    source_queue = models.ForeignKey(
+        Queue,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="outgoing_migration_items",
+        verbose_name=_("Source queue at preview"),
+    )
+
+    status = models.CharField(
+        _("Status"),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=PENDING,
+    )
+
+    followup = models.ForeignKey(
+        FollowUp,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="queue_migration_item",
+        verbose_name=_("Migration follow-up"),
+    )
+
+    class Meta:
+        unique_together = (("migration", "ticket"),)
+        verbose_name = _("Queue migration item")
+        verbose_name_plural = _("Queue migration items")
+
+    def __str__(self):
+        return f"{self.migration_id} / {self.ticket_id} ({self.status})"
+
+
 def is_a_list_without_empty_element(task_list):
     if not isinstance(task_list, list):
         raise ValidationError(f"{task_list} is not a list")

@@ -1,0 +1,255 @@
+{% extends "helpdesk/base.html" %}
+
+{% load i18n %}
+
+{% block helpdesk_title %}{% translate "Queue migration" %} #{{ preview.migration.id }}{% endblock %}
+{% block h1_title %}{% endblock %}
+
+{% block helpdesk_breadcrumb %}
+    <li class="breadcrumb-item">
+        <a href="{% url 'helpdesk:list' %}">{% translate "Tickets" %}</a>
+    </li>
+    <li class="breadcrumb-item">
+        <a href="{% url 'helpdesk:queue_migration_create' %}">{% translate "Migrate queues" %}</a>
+    </li>
+    <li class="breadcrumb-item active">#{{ preview.migration.id }}</li>
+{% endblock %}
+
+{% block helpdesk_body %}
+    <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h3 class="mb-0">
+                {% translate "Queue migration" %} #{{ preview.migration.id }}
+            </h3>
+            <span>
+                {% if preview.migration.status == "previewed" %}
+                    <span class="badge text-bg-warning">{% translate "Awaiting confirmation" %}</span>
+                {% elif preview.migration.status == "completed" %}
+                    <span class="badge text-bg-success">{% translate "Completed" %}</span>
+                {% else %}
+                    <span class="badge text-bg-secondary">{% translate "Cancelled" %}</span>
+                {% endif %}
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="mb-1">
+                <b>{% translate "Target queue" %}:</b> {{ preview.target_queue.title }}
+            </p>
+            <p class="mb-1">
+                <b>{% translate "Tickets" %}:</b>
+                {% blocktranslate count counter=preview.totals.tickets %}{{ counter }} ticket selected{% plural %}{{ counter }} tickets selected{% endblocktranslate %}
+                ·
+                {% blocktranslate count counter=preview.totals.moving %}{{ counter }} to move{% plural %}{{ counter }} to move{% endblocktranslate %}
+                {% if preview.totals.already_in_target %}
+                    ·
+                    {% blocktranslate count counter=preview.totals.already_in_target %}{{ counter }} already in target{% plural %}{{ counter }} already in target{% endblocktranslate %}
+                {% endif %}
+            </p>
+            <p class="mb-0">
+                <b>{% translate "Created" %}:</b> {{ preview.migration.created_at }}
+                {% if preview.migration.confirmed_at %}
+                    · <b>{% translate "Confirmed" %}:</b> {{ preview.migration.confirmed_at }}
+                {% endif %}
+                {% if preview.migration.reason %}
+                    · <b>{% translate "Reason" %}:</b> {{ preview.migration.reason }}
+                {% endif %}
+            </p>
+        </div>
+    </div>
+
+    {# Risk summary #}
+    {% if preview.migration.status == "previewed" and preview.per_queue_mode %}
+        {% if preview.losing_followers or preview.losing_owners %}
+            <div class="alert alert-warning" role="alert">
+                <b>{% translate "Access warnings" %}</b>
+                <ul class="mb-0 mt-1">
+                    {% for u in preview.losing_followers %}
+                        <li>
+                            {% blocktranslate with username=u.get_username %}Follower <b>{{ username }}</b> has no access to the target queue and will lose the staff entry point to these tickets (the CC record is kept).{% endblocktranslate %}
+                        </li>
+                    {% endfor %}
+                    {% for u in preview.losing_owners %}
+                        <li>
+                            {% blocktranslate with username=u.get_username %}Owner <b>{{ username }}</b> has no access to the target queue; the ticket stays assigned to them and they keep access to that ticket.{% endblocktranslate %}
+                        </li>
+                    {% endfor %}
+                </ul>
+            </div>
+        {% endif %}
+    {% endif %}
+
+    {# Field mapping #}
+    <div class="card mb-3">
+        <div class="card-header">
+            <h4 class="mb-0">{% translate "Field mapping" %}</h4>
+        </div>
+        <div class="card-body">
+            <table class="table table-sm mb-0">
+                <thead>
+                    <tr>
+                        <th>{% translate "Item" %}</th>
+                        <th>{% translate "How it is handled" %}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in preview.field_mapping_rows %}
+                        <tr>
+                            <td>{{ row.field }}</td>
+                            <td>{{ row.treatment }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if preview.custom_fields %}
+                <p class="mt-3 mb-1"><b>{% translate "Custom fields kept on the tickets" %}:</b></p>
+                <ul class="mb-0">
+                    {% for cf in preview.custom_fields %}
+                        <li>{{ cf.label }} <code>{{ cf.name }}</code></li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="mt-3 mb-0 text-body-secondary">{% translate "No custom fields are defined." %}</p>
+            {% endif %}
+        </div>
+    </div>
+
+    {# Per-ticket detail #}
+    <div class="card mb-3">
+        <div class="card-header">
+            <h4 class="mb-0">{% translate "Tickets" %}</h4>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                    <thead>
+                        <tr>
+                            <th>{% translate "Ticket" %}</th>
+                            <th>{% translate "Source queue" %}</th>
+                            <th>{% translate "Attachments" %}</th>
+                            <th>{% translate "Follow-ups" %}</th>
+                            <th>{% translate "CC (users / e-mails)" %}</th>
+                            <th>{% translate "Custom values" %}</th>
+                            <th>{% translate "Dependencies" %}</th>
+                            <th>{% translate "Status" %}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in preview.item_rows %}
+                            <tr>
+                                <td>
+                                    <a href="{{ row.ticket.get_absolute_url }}">{{ row.ticket.ticket_for_url }}</a>
+                                    <br><small>{{ row.ticket.title }}</small>
+                                </td>
+                                <td>{{ row.source_queue.title }}</td>
+                                <td>{{ row.counts.attachments }}</td>
+                                <td>{{ row.counts.followups }}</td>
+                                <td>
+                                    {{ row.counts.cc_users }} / {{ row.counts.cc_emails }}
+                                    {% if preview.per_queue_mode %}
+                                        {% for u in row.losing_cc_users %}
+                                            <br><span class="badge text-bg-warning" title="{% translate 'No access to the target queue' %}">⚠ {{ u.get_username }}</span>
+                                        {% endfor %}
+                                        {% if row.owner_loses_access %}
+                                            <br><span class="badge text-bg-info" title="{% translate 'Owner without target queue access' %}">⚠ {% translate "owner" %} {{ row.owner.get_username }}</span>
+                                        {% endif %}
+                                    {% endif %}
+                                </td>
+                                <td>{{ row.counts.custom_values }}</td>
+                                <td>{{ row.counts.dependencies }}</td>
+                                <td>
+                                    {% if row.item.status == "migrated" %}
+                                        <span class="badge text-bg-success">{% translate "Migrated" %}</span>
+                                        {% if row.item.followup %}
+                                            <a class="small" href="{{ row.item.followup.get_absolute_url }}">{% translate "note" %}</a>
+                                        {% endif %}
+                                    {% elif row.item.status == "unchanged" or row.already_in_target %}
+                                        <span class="badge text-bg-secondary">{% translate "No change needed" %}</span>
+                                    {% else %}
+                                        <span class="badge text-bg-light border">{% translate "Pending" %}</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    {# Access rights #}
+    <div class="card mb-3">
+        <div class="card-header">
+            <h4 class="mb-0">{% translate "Access after the move" %}</h4>
+        </div>
+        <div class="card-body">
+            {% if not preview.per_queue_mode %}
+                <p class="mb-0">
+                    {% translate "Per-queue staff permissions are disabled: every helpdesk staff member can open these tickets in the target queue." %}
+                </p>
+            {% else %}
+                <p>
+                    <b>{% translate "Newly able to open these tickets" %}:</b>
+                    {% if preview.recipients_new %}
+                        {{ preview.recipients_new|length }}
+                        <span class="text-body-secondary">（
+                            {% for u in preview.recipients_new %}{{ u.get_username }}{% if not forloop.last %}, {% endif %}{% endfor %}）
+                        </span>
+                    {% else %}
+                        <span class="text-body-secondary">{% translate "nobody new" %}</span>
+                    {% endif %}
+                </p>
+                <p>
+                    <b>{% translate "Already had access" %}:</b>
+                    <span class="text-body-secondary">
+                        {% for u in preview.recipients_existing %}{{ u.get_username }}{% if not forloop.last %}, {% endif %}{% empty %}{% translate "none" %}{% endfor %}
+                    </span>
+                </p>
+                <p>
+                    <b>{% translate "Followers losing their staff entry point" %}:</b>
+                    {% if preview.losing_followers %}
+                        <span class="text-warning">
+                            {% for u in preview.losing_followers %}{{ u.get_username }}{% if not forloop.last %}, {% endif %}{% endfor %}
+                        </span>
+                        <br><small class="text-body-secondary">
+                            {% translate "Their CC records are kept; e-mail-only followers continue to receive notifications according to the queue settings. Queue permissions are not modified by this migration." %}
+                        </small>
+                    {% else %}
+                        <span class="text-body-secondary">{% translate "none" %}</span>
+                    {% endif %}
+                </p>
+            {% endif %}
+            <hr>
+            <p class="mb-0"><b>{% translate "Queue notification addresses" %}:</b></p>
+            <ul class="mb-0">
+                {% for info in preview.queue_cc_info %}
+                    <li>
+                        {{ info.queue.title }} —
+                        {% translate "new ticket CC" %}: {{ info.new_ticket_cc|default:"-" }}；
+                        {% translate "updated ticket CC" %}: {{ info.updated_ticket_cc|default:"-" }}
+                    </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    {# Actions #}
+    {% if preview.migration.status == "previewed" %}
+        <div class="card mb-3 border-warning">
+            <div class="card-body">
+                <form method="post" class="d-inline">
+                    {% csrf_token %}
+                    <p>
+                        {% translate "Confirmation moves every selected ticket in one batch. If any ticket fails, the whole batch returns to its original state. Running the same batch again never writes duplicate changes. Historical replies and queue permissions are left untouched." %}
+                    </p>
+                    <button type="submit" name="action" value="confirm" class="btn btn-primary">
+                        <i class="fa-solid fa-check"></i>
+                        {% translate "Confirm and migrate" %}
+                    </button>
+                    <button type="submit" name="action" value="cancel" class="btn btn-outline-secondary ms-2">
+                        {% translate "Cancel" %}
+                    </button>
+                </form>
+            </div>
+        </div>
+    {% endif %}
+{% endblock %}
