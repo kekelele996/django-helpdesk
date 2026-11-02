@@ -1,0 +1,59 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{% url 'admin:helpdesk_customfieldrule_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+    &rsaquo; {% translate 'Preview affected tickets' %}
+  </div>
+{% endblock %}
+
+{% block content %}
+  <h1>{% blocktranslate with field=rule.field.label queue=rule.queue|default:_('all queues') %}
+    Preview: {{ field }} / {{ queue }}
+  {% endblocktranslate %}</h1>
+
+  <p>
+    {% blocktranslate count counter=result.total_scanned %}
+      Scanned {{ counter }} ticket.
+    {% plural %}
+      Scanned {{ counter }} tickets.
+    {% endblocktranslate %}
+    {% translate "No tickets were changed. Existing values are cleared only when an editor confirms it on the ticket, and every clear is recorded in the ticket history." %}
+  </p>
+
+  <h2>{% translate "Hidden but still carrying a value" %}</h2>
+  <p class="help">
+    {% translate "These tickets would no longer show the field but hold a stored value. Editors are asked whether to keep or clear it; clearing keeps it in the change history." %}
+  </p>
+  {% if result.hidden_with_value %}
+    <ul>
+      {% for ticket in result.hidden_with_value %}
+        <li>
+          <a href="{{ ticket.get_absolute_url }}">{{ ticket.queue.slug }}-{{ ticket.id }}: {{ ticket.title }}</a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>{% translate "None." %}</p>
+  {% endif %}
+
+  <h2>{% translate "Would become required but empty" %}</h2>
+  {% if result.required_missing %}
+    <ul>
+      {% for ticket in result.required_missing %}
+        <li>
+          <a href="{{ ticket.get_absolute_url }}">{{ ticket.queue.slug }}-{{ ticket.id }}: {{ ticket.title }}</a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>{% translate "None." %}</p>
+  {% endif %}
+
+  <p>
+    <a href="#" onclick="window.history.back(); return false;">{% translate "Back to the rule" %}</a>
+  </p>
+{% endblock %}

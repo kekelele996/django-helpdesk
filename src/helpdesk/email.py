@@ -38,7 +38,7 @@ from django.utils import encoding, timezone
 from django.utils.translation import gettext as _
 from email_reply_parser import EmailReplyParser
 
-from helpdesk import settings as helpdesk_settings
+from helpdesk import field_rules, settings as helpdesk_settings
 from helpdesk.exceptions import DeleteIgnoredTicketException, IgnoreTicketException
 from helpdesk.lib import process_attachments, safe_template_context
 from helpdesk.models import FollowUp, IgnoreEmail, Queue, Ticket
@@ -713,6 +713,11 @@ def create_object_from_email_message(message, ticket_id, payload, files, logger)
     create_ticket_backlinks(ticket, f, user=sender_user)
 
     if new:
+        # E-mail cannot supply custom field values, so run the same
+        # conditional validation as the web forms and API and, when required
+        # information is missing, leave staff a private note on the ticket
+        # rather than letting the gap surface only at handoff.
+        field_rules.note_missing_required_fields(ticket, logger=logger)
         # emit signal when a new ticket is created
         new_ticket_done.send(sender="create_object_from_email_message", ticket=ticket)
     else:

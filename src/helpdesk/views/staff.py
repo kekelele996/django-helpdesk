@@ -1426,7 +1426,7 @@ def edit_ticket(request, ticket_id):
 
     form = EditTicketForm(request.POST or None, instance=ticket)
     if form.is_valid():
-        ticket = form.save()
+        ticket = form.save(user=request.user)
         return redirect(ticket)
 
     return render(

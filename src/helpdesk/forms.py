@@ -7,6 +7,7 @@ forms.py - Definitions of newforms-based forms for creating and maintaining
            tickets.
 """
 
+import json
 import logging
 from datetime import datetime
 from typing import ClassVar
@@ -18,7 +19,7 @@ from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from helpdesk import settings as helpdesk_settings
+from helpdesk import field_rules, settings as helpdesk_settings
 from helpdesk.lib import (
     convert_value,
     get_assignable_users,
@@ -61,6 +62,18 @@ class CustomFieldMixin:
     """
     Mixin that provides a method to turn CustomFields into an actual field
     """
+
+    #: Custom field names hidden by the rules for the submitted data.
+    invisible_custom_fields: set
+    #: Custom field names the user explicitly confirmed clearing -> old value.
+    confirmed_clears: dict
+    #: Custom field names that carry a stored value although rules hide them.
+    pending_clear_choices: dict
+
+    def _init_rule_state(self):
+        self.invisible_custom_fields = set()
+        self.confirmed_clears = {}
+        self.pending_clear_choices = {}
 
     def customfield_to_field(self, field, instanceargs):
         # Use TextInput widget by default
@@ -112,6 +125,170 @@ class CustomFieldMixin:
                 raise NameError(f"Unrecognized data_type {field.data_type}")
 
         self.fields[f"custom_{field.name}"] = fieldclass(**instanceargs)
+        # Marker consumed by custom_field_rules.js to locate the whole row.
+        self.fields[f"custom_{field.name}"].widget.attrs["data-custom-field"] = (
+            field.name
+        )
+
+    def _custom_field_names(self):
+        return [
+            name[7:]
+            for name in self.fields
+            if name.startswith("custom_") and not name.endswith("_clear")
+        ]
+
+    def _attach_rule_widget_attrs(self):
+        """Expose rules to the browser as widget data-* attributes.
+
+        Only presentation (show/hide and the required marker) happens
+        client-side; every rule is re-evaluated on the server in clean(), so
+        tampering with the attributes cannot bypass validation.
+        """
+        names = self._custom_field_names()
+        if not names:
+            return
+        config = field_rules.widget_rules_config(names)
+        for name, rule_config in config.items():
+            form_field = self.fields.get(f"custom_{name}")
+            if form_field is None:
+                continue
+            if rule_config["display"]:
+                form_field.widget.attrs["data-display-rules"] = json.dumps(
+                    rule_config["display"]
+                )
+            if rule_config["required"]:
+                form_field.widget.attrs["data-required-rules"] = json.dumps(
+                    rule_config["required"]
+                )
+
+    def _resolve_queue_id(self, cleaned_data):
+        queue = cleaned_data.get("queue")
+        if queue is not None:
+            # ModelForms hand back the Queue instance; the plain forms hand
+            # back the selected id.
+            queue_id = getattr(queue, "id", queue)
+            try:
+                return int(queue_id)
+            except (TypeError, ValueError):
+                return None
+        get_queue = getattr(self, "_get_queue", None)
+        if get_queue is not None:
+            try:
+                return get_queue().id
+            except Exception:  # noqa: BLE001 - misconfiguration handled elsewhere
+                pass
+        instance = getattr(self, "instance", None)
+        return getattr(instance, "queue_id", None)
+
+    def _rule_context(self, cleaned_data):
+        custom_values = {
+            key: value
+            for key, value in cleaned_data.items()
+            if key.startswith("custom_") and not key.endswith("_clear")
+        }
+        instance = getattr(self, "instance", None)
+        priority = cleaned_data.get(
+            "priority", getattr(instance, "priority", None)
+        )
+        return field_rules.build_context(
+            self._resolve_queue_id(cleaned_data), priority, custom_values
+        )
+
+    @staticmethod
+    def _custom_value_is_empty(form_field, value):
+        if isinstance(form_field, forms.BooleanField):
+            # A required checkbox has to be ticked.
+            return not value
+        return value is None or value == ""
+
+    def _rule_states(self, queue_id, context):
+        """Visible/required state for rules that actually govern this form."""
+        states = {}
+        for name, rule in field_rules.rules_for_queue(queue_id).items():
+            if f"custom_{name}" not in self.fields:
+                # staff_only fields are absent from the public form, etc.
+                continue
+            visible = field_rules.evaluate_predicates(rule.display_when, context)
+            if rule.required_when:
+                required = visible and field_rules.evaluate_predicates(
+                    rule.required_when, context
+                )
+            else:
+                required = visible and self.fields[f"custom_{name}"].required
+            states[name] = {"visible": visible, "required": required}
+        return states
+
+    def _apply_conditional_custom_fields(self, cleaned_data, *, keep_hidden_values):
+        """Enforce CustomFieldRule states against submitted data.
+
+        Hidden fields never raise (including the static ``required`` error),
+        and their submitted values are dropped unless ``keep_hidden_values``
+        asks to preserve stored values (ticket respond form, which shows every
+        field to staff without a keep/clear confirmation).
+        """
+        queue_id = self._resolve_queue_id(cleaned_data)
+        if queue_id is None:
+            return cleaned_data
+        context = self._rule_context(cleaned_data)
+        states = self._rule_states(queue_id, context)
+        self.invisible_custom_fields = set()
+        for name, state in states.items():
+            key = f"custom_{name}"
+            value = cleaned_data.get(key)
+            if not state["visible"]:
+                self.invisible_custom_fields.add(name)
+                # Discard every pending error (static required, invalid value)
+                # for a field the rules say must not be shown at all.
+                self.errors.pop(key, None)
+                if name in self.pending_clear_choices:
+                    # Standalone edit form: ask what to do with the old value.
+                    # Nothing is removed without the explicit confirmation.
+                    old_value = self.pending_clear_choices[name]
+                    if cleaned_data.get(f"{key}_clear"):
+                        self.confirmed_clears[name] = old_value
+                        cleaned_data[key] = None
+                    else:
+                        cleaned_data[key] = old_value
+                elif keep_hidden_values:
+                    # Respond form: no confirmation row here, so keep the
+                    # stored value untouched instead of wiping it silently.
+                    # Reuse the parsed initial so has_changed() does not see
+                    # date/time values change just by being restored.
+                    initial = self.fields[key].initial
+                    if initial not in (None, ""):
+                        cleaned_data[key] = initial
+                    elif self._stored_custom_values().get(name) is not None:
+                        cleaned_data[key] = self._stored_custom_values()[name]
+                    else:
+                        cleaned_data.pop(key, None)
+                else:
+                    cleaned_data[key] = None
+                continue
+            if state["required"] and self._custom_value_is_empty(
+                self.fields[key], value
+            ):
+                self.add_error(
+                    key,
+                    ValidationError(
+                        self.fields[key].error_messages.get(
+                            "required", _("This field is required.")
+                        ),
+                        code="required",
+                    ),
+                )
+        return cleaned_data
+
+    def _stored_custom_values(self):
+        instance = getattr(self, "instance", None)
+        if instance is None or getattr(instance, "pk", None) is None:
+            return {}
+        if not hasattr(self, "_stored_custom_values_cache"):
+            self._stored_custom_values_cache = dict(
+                TicketCustomFieldValue.objects.filter(
+                    ticket=instance
+                ).values_list("field__name", "value")
+            )
+        return self._stored_custom_values_cache
 
 
 class EditTicketForm(CustomFieldMixin, forms.ModelForm):
@@ -128,13 +305,24 @@ class EditTicketForm(CustomFieldMixin, forms.ModelForm):
         )
 
     class Media:
-        js = ("helpdesk/js/init_due_date.js", "helpdesk/js/init_datetime_classes.js")
+        js = (
+            "helpdesk/js/init_due_date.js",
+            "helpdesk/js/init_datetime_classes.js",
+            "helpdesk/js/custom_field_rules.js",
+        )
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, allow_clear_choices=True, **kwargs):
         """
-        Add any custom fields that are defined to the form
+        Add any custom fields that are defined to the form.
+
+        ``allow_clear_choices=False`` is used by the custom-fields part of the
+        ticket respond form: it shows every field to staff and keeps stored
+        values of rule-hidden fields untouched, whereas the standalone edit
+        form asks an explicit keep/clear question for those values.
         """
         super().__init__(*args, **kwargs)
+        self._init_rule_state()
+        self.allow_clear_choices = allow_clear_choices
 
         # Since title is max 100 characters limit it in editing
         if "title" in self.fields:
@@ -202,22 +390,112 @@ class EditTicketForm(CustomFieldMixin, forms.ModelForm):
 
             self.customfield_to_field(field, instanceargs)
 
-    def save(self, *args, **kwargs):
-        for field, value in self.cleaned_data.items():
-            if field.startswith("custom_"):
-                field_name = field.replace("custom_", "", 1)
-                customfield = CustomField.objects.get(name=field_name)
-                try:
-                    cfv = TicketCustomFieldValue.objects.get(
-                        ticket=self.instance, field=customfield
-                    )
-                except ObjectDoesNotExist:
-                    cfv = TicketCustomFieldValue(
-                        ticket=self.instance, field=customfield
-                    )
+        self._attach_rule_widget_attrs()
+        if self.allow_clear_choices:
+            self._add_pending_clear_choices()
 
-                cfv.value = convert_value(value)
-                cfv.save()
+    def _add_pending_clear_choices(self):
+        """Offer keep/clear for stored values the rules now hide.
+
+        The value is never removed just because a rule changed: the editor has
+        to tick the confirmation checkbox. A confirmed clear is recorded as a
+        ticket change in save(), so the old value stays findable in history.
+        """
+        if not self.instance.pk:
+            return
+        stored_values = self._stored_custom_values()
+        if not stored_values:
+            return
+        initial_context = field_rules.build_context(
+            self.instance.queue_id, self.instance.priority, stored_values
+        )
+        states = self._rule_states(self.instance.queue_id, initial_context)
+        for name, state in states.items():
+            key = f"custom_{name}"
+            old_value = stored_values.get(name)
+            if state["visible"] or old_value in (None, ""):
+                continue
+            self.fields[key].widget.attrs["data-initial-hidden"] = "1"
+            self.fields[f"{key}_clear"] = forms.BooleanField(
+                required=False,
+                label=_('Clear the old value of "%(label)s"')
+                % {"label": self.fields[key].label},
+                help_text=_(
+                    "This field is hidden by the current rules but still "
+                    "holds a value. Tick to clear it - the removed value is "
+                    "kept in the ticket history. Leave unticked to keep it."
+                ),
+                widget=forms.CheckboxInput(
+                    attrs={
+                        "class": "form-check-input",
+                        "data-clear-for": key,
+                    }
+                ),
+            )
+            self.pending_clear_choices[name] = old_value
+
+    def clean(self):
+        cleaned_data = super().clean()
+        return self._apply_conditional_custom_fields(
+            cleaned_data, keep_hidden_values=not self.allow_clear_choices
+        )
+
+    def save(self, *args, followup=None, user=None, **kwargs):
+        cleared = []
+        for key in list(self.cleaned_data):
+            if not key.startswith("custom_") or key.endswith("_clear"):
+                continue
+            field_name = key[7:]
+            customfield = CustomField.objects.get(name=field_name)
+            value = self.cleaned_data[key]
+            try:
+                cfv = TicketCustomFieldValue.objects.get(
+                    ticket=self.instance, field=customfield
+                )
+            except ObjectDoesNotExist:
+                cfv = None
+
+            if field_name in self.confirmed_clears:
+                old_value = self.confirmed_clears[field_name]
+                if cfv is not None:
+                    cfv.delete()
+                cleared.append((field_name, old_value))
+                if followup is not None:
+                    followup.ticketchange_set.create(
+                        field=field_name, old_value=old_value, new_value=""
+                    )
+                continue
+
+            if cfv is None:
+                cfv = TicketCustomFieldValue(
+                    ticket=self.instance, field=customfield
+                )
+            new_value = convert_value(value)
+            if followup is not None:
+                old_value = convert_value(self.fields[key].initial)
+                if old_value != new_value:
+                    followup.ticketchange_set.create(
+                        field=field_name,
+                        old_value=old_value or "",
+                        new_value=new_value or "",
+                    )
+            cfv.value = new_value
+            cfv.save()
+
+        if cleared and followup is None:
+            followup = FollowUp(
+                ticket=self.instance,
+                title=_("Custom field values removed"),
+                date=timezone.now(),
+                public=False,
+            )
+            if user is not None and getattr(user, "is_authenticated", False):
+                followup.user = user
+            followup.save()
+            for field_name, old_value in cleared:
+                followup.ticketchange_set.create(
+                    field=field_name, old_value=old_value, new_value=""
+                )
 
         return super().save(*args, **kwargs)
 
@@ -231,7 +509,9 @@ class EditTicketCustomFieldForm(EditTicketForm):
         """
         Add any custom fields that are defined to the form
         """
-        super().__init__(*args, **kwargs)
+        # Staff on the respond page see every field; rule-hidden stored
+        # values are kept, not offered for clearing (no confirmation row here).
+        super().__init__(*args, allow_clear_choices=False, **kwargs)
 
         if HELPDESK_SHOW_CUSTOM_FIELDS_FOLLOW_UP_LIST:
             fields = list(self.fields)
@@ -244,20 +524,10 @@ class EditTicketCustomFieldForm(EditTicketForm):
                     self.fields.pop(field, None)
 
     def save(self, *args, **kwargs):
-        # if form is saved in a ticket update, it is passed
-        # a followup instance to trace custom fields changes
-        if "followup" in kwargs:
-            followup = kwargs.pop("followup", None)
-
-            for field, value in self.cleaned_data.items():
-                if field.startswith("custom_") and value != self.fields[field].initial:
-                    followup.ticketchange_set.create(
-                        field=field.replace("custom_", "", 1),
-                        old_value=self.fields[field].initial,
-                        new_value=value,
-                    )
-
-        super().save(*args, **kwargs)
+        # The followup is passed when the form is saved during a ticket
+        # update; EditTicketForm.save writes the ticket changes against it.
+        followup = kwargs.pop("followup", None)
+        return super().save(*args, followup=followup, **kwargs)
 
     class Meta:
         model = Ticket
@@ -364,10 +634,15 @@ class AbstractTicketForm(CustomFieldMixin, forms.Form):
         )
 
     class Media:
-        js = ("helpdesk/js/init_due_date.js", "helpdesk/js/init_datetime_classes.js")
+        js = (
+            "helpdesk/js/init_due_date.js",
+            "helpdesk/js/init_datetime_classes.js",
+            "helpdesk/js/custom_field_rules.js",
+        )
 
     def __init__(self, kbcategory=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._init_rule_state()
         if helpdesk_settings.HELPDESK_KB_ENABLED and kbcategory:
             self.fields["kbitem"] = forms.ChoiceField(
                 widget=forms.Select(attrs={"class": "form-control"}),
@@ -395,6 +670,14 @@ class AbstractTicketForm(CustomFieldMixin, forms.Form):
             }
 
             self.customfield_to_field(field, instanceargs)
+        # Conditional show/hide + required markers for the browser.
+        self._attach_rule_widget_attrs()
+
+    def clean(self):
+        cleaned_data = super().clean()
+        return self._apply_conditional_custom_fields(
+            cleaned_data, keep_hidden_values=False
+        )
 
     def _get_queue(self):
         # this procedure is re-defined for public submission form
@@ -426,7 +709,17 @@ class AbstractTicketForm(CustomFieldMixin, forms.Form):
         return ticket, queue
 
     def _create_custom_fields(self, ticket):
-        ticket.save_custom_field_values(self.cleaned_data)
+        # Values of fields hidden by the rules were dropped in clean(); make
+        # sure they are not persisted as empty rows either.
+        data = {
+            key: value
+            for key, value in self.cleaned_data.items()
+            if not (
+                key.startswith("custom_")
+                and key[7:] in self.invisible_custom_fields
+            )
+        }
+        ticket.save_custom_field_values(data)
 
     def _create_follow_up(self, ticket, title, user=None):
         followup = FollowUp(

@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model, password_validation
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils.translation import gettext as _
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 
@@ -305,6 +306,52 @@ class TicketSerializer(BaseTicketSerializer):
         raise ValidationError(ticket_form.errors)
 
     def update(self, instance, validated_data):
+        self._apply_custom_field_rules(instance, validated_data)
         instance = super().update(instance, validated_data)
         instance.save_custom_field_values(validated_data)
         return instance
+
+    @staticmethod
+    def _apply_custom_field_rules(instance, validated_data):
+        """Enforce the same CustomFieldRule conditions as the web forms.
+
+        Values of fields the rules now hide are discarded from the payload
+        (the stored value is kept, it is never removed silently); visible
+        required fields that arrive empty are rejected.
+        """
+        from helpdesk import field_rules
+
+        custom_keys = {
+            key: value
+            for key, value in validated_data.items()
+            if key.startswith("custom_")
+        }
+        if (
+            not custom_keys
+            and "queue" not in validated_data
+            and "priority" not in validated_data
+        ):
+            return
+
+        queue = validated_data.get("queue", instance.queue)
+        queue_id = getattr(queue, "id", queue)
+        priority = validated_data.get("priority", instance.priority)
+        merged = field_rules.ticket_custom_values(instance)
+        merged.update(custom_keys)
+        context = field_rules.build_context(queue_id, priority, merged)
+        data_types = dict(CustomField.objects.values_list("name", "data_type"))
+        errors = {}
+        for name, state in field_rules.field_states(queue_id, context).items():
+            key = f"custom_{name}"
+            if not state["visible"]:
+                validated_data.pop(key, None)
+                continue
+            value = merged.get(name)
+            if data_types.get(name) == "boolean":
+                empty = value is not True
+            else:
+                empty = value is None or value == ""
+            if state["required"] and key in custom_keys and empty:
+                errors[key] = [_("This field is required.")]
+        if errors:
+            raise ValidationError(errors)

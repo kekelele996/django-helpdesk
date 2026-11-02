@@ -2200,6 +2200,120 @@ class TicketCustomFieldValue(models.Model):
         verbose_name_plural = _("Ticket custom field values")
 
 
+class CustomFieldRule(models.Model):
+    """
+    Conditional display/required rules for a custom field.
+
+    A rule belongs to one custom field and optionally one queue. A rule
+    without a queue is the global fallback; a queue-specific rule always
+    takes precedence over it. The same rules are evaluated by the public
+    submission form, the staff forms, the REST API and e-mail-created
+    tickets, so validation cannot drift between entry points.
+
+    ``display_when`` / ``required_when`` hold a JSON list of predicates that
+    all have to match (AND). A predicate is a dict such as::
+
+        {"field": "custom_fault_type", "operator": "eq", "value": "network"}
+        {"field": "queue", "operator": "in", "value": ["3", "7"]}
+        {"field": "custom_order_number", "operator": "filled"}
+
+    Supported operators: ``eq``, ``ne``, ``in``, ``not_in``, ``contains``,
+    ``empty``, ``filled``. Predicate fields are ``queue``, ``priority`` or
+    ``custom_<field name>``. An empty predicate list means "always": an
+    empty ``display_when`` keeps the field visible, an empty
+    ``required_when`` falls back to the static ``CustomField.required``
+    flag.
+    """
+
+    field = models.ForeignKey(
+        CustomField,
+        on_delete=models.CASCADE,
+        related_name="rules",
+        verbose_name=_("Custom field"),
+    )
+
+    queue = models.ForeignKey(
+        Queue,
+        on_delete=models.CASCADE,
+        related_name="customfield_rules",
+        verbose_name=_("Queue"),
+        blank=True,
+        null=True,
+        help_text=_(
+            "Leave empty for a rule that applies in every queue. "
+            "A queue-specific rule overrides the global rule for the field."
+        ),
+    )
+
+    display_when = models.JSONField(
+        _("Display when"),
+        default=list,
+        blank=True,
+        help_text=_(
+            "Predicates (JSON list, all must match) under which the field is "
+            'shown. Example: [{"field": "custom_fault_type", '
+            '"operator": "eq", "value": "network"}]. Empty means always shown.'
+        ),
+    )
+
+    required_when = models.JSONField(
+        _("Required when"),
+        default=list,
+        blank=True,
+        help_text=_(
+            "Predicates (JSON list, all must match) under which the field is "
+            "required. Empty falls back to the field's static Required flag."
+        ),
+    )
+
+    enabled = models.BooleanField(
+        _("Enabled?"),
+        default=True,
+    )
+
+    class Meta:
+        unique_together = (("field", "queue"),)
+        verbose_name = _("Custom field rule")
+        verbose_name_plural = _("Custom field rules")
+
+    def __str__(self):
+        if self.queue_id:
+            return f"{self.field} / {self.queue.slug}"
+        return f"{self.field} / *"
+
+    def clean(self):
+        # Imported here because the engine imports the models module.
+        from helpdesk.field_rules import validate_predicates
+
+        super().clean()
+        errors = {}
+        for attr in ("display_when", "required_when"):
+            try:
+                validate_predicates(getattr(self, attr))
+            except ValidationError as exc:
+                errors[attr] = exc.messages
+        # The unique_together index cannot express uniqueness for the
+        # global (queue IS NULL) rule because SQL treats NULLs as distinct.
+        if self.field_id and self.queue_id is None:
+            duplicate = CustomFieldRule.objects.filter(
+                field=self.field, queue__isnull=True
+            )
+            if self.pk:
+                duplicate = duplicate.exclude(pk=self.pk)
+            if duplicate.exists():
+                errors["queue"] = _(
+                    "A global rule (without a queue) already exists for this field."
+                )
+        if errors:
+            raise ValidationError(errors)
+
+    def preview_affected_tickets(self):
+        """Tickets the rule, as currently defined, would affect."""
+        from helpdesk.field_rules import preview_rule
+
+        return preview_rule(self)
+
+
 class TicketDependency(models.Model):
     """
     The ticket identified by `ticket` cannot be resolved until the ticket in `depends_on` has been resolved.
